@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14
+    container_name: ai-bot-postgres
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
+      TZ: Asia/Tehran
+      PGTZ: Asia/Tehran
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - postgres
+      - "-c"
+      - "listen_addresses=*"
+
+volumes:
+  postgres_data:

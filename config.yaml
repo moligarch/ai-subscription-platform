@@ -1,0 +1,30 @@
+bot:
+  token: "DUMMY"        # not used now
+  mode: "polling"
+  port: 0
+  url: ""
+
+admin:
+  port: 9090
+
+database:
+  url: "postgres://user:pass@127.0.0.1:5432/mydb?sslmode=disable"
+
+redis:
+  url: "redis://localhost:6379"
+  password: ""
+  db: 0
+  ttl: "24h"
+
+ai:
+  openai_key: "sk-..."
+  gemini_key: ""
+  gemini_url: "https://generativelanguage.googleapis.com"
+  default_model: "gpt-4"
+
+payment:
+  mellat_terminal: "TERMINAL123"
+  zarinpal_key: "ZP-KEY-XYZ"
+
+scheduler:
+  expiry_check_cron: "0 0 * * *"
