@@ -2,7 +2,6 @@ package domain
 
 import (
     "context"
-    "regexp"
     "time"
 
     "github.com/google/uuid"
@@ -10,32 +9,26 @@ import (
 
 // User is an immutable domain entity.
 type User struct {
-    ID         string    // UUID
-    TelegramID int64     // unique per Telegram
-    FullName   string
-    Phone      string
-    CreatedAt  time.Time
+	ID         string
+	TelegramID int64
+	Username   string
+	RegisteredAt time.Time
+    LastActiveAt time.Time
 }
 
 // NewUser constructs and validates a User.
-func NewUser(id string, tgID int64, fullName, phone string) (*User, error) {
+func NewUser(id string, tgID int64, username string) (*User, error) {
     if id == "" {
         return nil, ErrInvalidArgument
     }
     if tgID <= 0 {
         return nil, ErrInvalidArgument
     }
-    if fullName == "" {
+    if username == "" {
         return nil, ErrInvalidArgument
     }
-    // simple phone validation
-    if phone != "" {
-        re := regexp.MustCompile(`^\+?[0-9]{10,15}$`)
-        if !re.MatchString(phone) {
-            return nil, ErrInvalidArgument
-        }
-    }
-    return &User{ID: id, TelegramID: tgID, FullName: fullName, Phone: phone, CreatedAt: time.Now()}, nil
+   
+    return &User{ID: id, TelegramID: tgID, Username: username, RegisteredAt: time.Now(), LastActiveAt: time.Now()}, nil
 }
 
 

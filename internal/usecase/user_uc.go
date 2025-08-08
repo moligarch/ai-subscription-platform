@@ -2,7 +2,9 @@ package usecase
 
 import (
     "context"
+    "time"
 
+    "github.com/google/uuid"
     "telegram-ai-subscription/internal/domain"
 )
 
@@ -17,19 +19,31 @@ func NewUserUseCase(userRepo domain.UserRepository) *UserUseCase {
 }
 
 // RegisterOrFetch ensures a user exists, creating if needed.
-func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, fullName, phone string) (*domain.User, error) {
+// If username is non-nil, it updates it on conflict.
+func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*domain.User, error) {
     usr, err := u.userRepo.FindByTelegramID(ctx, tgID)
     if err == nil {
-        return usr, nil // already exists
+        // Optionally update username if changed
+        if username != "" && (usr.Username == "" || usr.Username != username) {
+            usr.Username = username
+            usr.RegisteredAt = time.Now()
+            usr.LastActiveAt = time.Now()
+            if err := u.userRepo.Save(ctx, usr); err != nil {
+                return nil, err
+            }
+        }
+        return usr, nil
     }
     if err != domain.ErrNotFound {
-        return nil, err // unexpected
+        return nil, err
     }
     // create new
-    id := domain.NewUUID() // assume helper generating UUID string
-    newUsr, err := domain.NewUser(id, tgID, fullName, phone)
-    if err != nil {
-        return nil, err
+    newUsr := &domain.User{
+        ID:           uuid.NewString(),
+        TelegramID:   tgID,
+        Username:     username,
+        RegisteredAt: time.Now(),
+        LastActiveAt: time.Now(),
     }
     if err := u.userRepo.Save(ctx, newUsr); err != nil {
         return nil, err
