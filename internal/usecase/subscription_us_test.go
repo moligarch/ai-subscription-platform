@@ -188,3 +188,84 @@ func TestDeductNoCredits(t *testing.T) {
 		t.Fatalf("expected ErrInsufficientCredits got %v", err)
 	}
 }
+
+func TestSubscribePlanNotFound(t *testing.T) {
+	ctx := context.Background()
+	planRepo := newMemPlanRepo()
+	subRepo := newMemSubRepo()
+
+	uc := NewSubscriptionUseCase(planRepo, subRepo)
+	_, err := uc.Subscribe(ctx, "user-x", "no-such-plan")
+	if err == nil {
+		t.Fatalf("expected ErrNotFound")
+	}
+	if err != domain.ErrNotFound {
+		t.Fatalf("expected ErrNotFound got %v", err)
+	}
+}
+
+func TestDeductCreditInactiveSubscription(t *testing.T) {
+	ctx := context.Background()
+	planRepo := newMemPlanRepo()
+	subRepo := newMemSubRepo()
+
+	plan := &domain.SubscriptionPlan{ID: "p-inactive", Name: "P", DurationDays: 7, Credits: 5, CreatedAt: time.Now()}
+	_ = planRepo.Save(ctx, plan)
+
+	now := time.Now()
+	sub := &domain.UserSubscription{
+		ID:               "sub-inactive",
+		UserID:           "user-inactive",
+		PlanID:           plan.ID,
+		StartAt:          now,
+		ExpiresAt:        now.Add(7 * 24 * time.Hour),
+		RemainingCredits: 5,
+		Active:           false, // inactive
+		CreatedAt:        now,
+	}
+	_ = subRepo.Save(ctx, sub)
+
+	uc := NewSubscriptionUseCase(planRepo, subRepo)
+	_, err := uc.DeductCredit(ctx, sub)
+	if err == nil {
+		t.Fatalf("expected ErrExpiredSubscription for inactive subscription")
+	}
+	if err != domain.ErrExpiredSubscription {
+		t.Fatalf("expected ErrExpiredSubscription got %v", err)
+	}
+}
+
+func TestSubscribeExtendsExpired(t *testing.T) {
+	ctx := context.Background()
+	planRepo := newMemPlanRepo()
+	subRepo := newMemSubRepo()
+
+	plan := &domain.SubscriptionPlan{ID: "plan-exp", Name: "P", DurationDays: 5, Credits: 3, CreatedAt: time.Now()}
+	_ = planRepo.Save(ctx, plan)
+
+	now := time.Now()
+	sub := &domain.UserSubscription{
+		ID:               "sub-expired",
+		UserID:           "user-expired",
+		PlanID:           plan.ID,
+		StartAt:          now.Add(-10 * 24 * time.Hour),
+		ExpiresAt:        now.Add(-24 * time.Hour), // already expired
+		RemainingCredits: 0,
+		Active:           true,
+		CreatedAt:        now.Add(-10 * 24 * time.Hour),
+	}
+	_ = subRepo.Save(ctx, sub)
+
+	uc := NewSubscriptionUseCase(planRepo, subRepo)
+	updated, err := uc.Subscribe(ctx, sub.UserID, plan.ID)
+	if err != nil {
+		t.Fatalf("Subscribe on expired failed: %v", err)
+	}
+
+	if updated.RemainingCredits != plan.Credits {
+		t.Fatalf("expected credits reset to %d got %d", plan.Credits, updated.RemainingCredits)
+	}
+	if updated.ExpiresAt.Before(time.Now()) {
+		t.Fatalf("expected expiry to be in the future, got %v", updated.ExpiresAt)
+	}
+}
