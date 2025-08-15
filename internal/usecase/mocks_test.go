@@ -1,22 +1,20 @@
+// File: internal/usecase/mocks_test.go
 package usecase
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
-
-	"github.com/google/uuid"
 )
 
-// ----------------------
-// memUserRepo (shared)
-// ----------------------
+// memUserRepo is a small in-memory implementation used by unit tests.
 type memUserRepo struct {
-	mu      sync.Mutex
-	store   map[int64]*domain.User
-	saveErr error
+	mu      sync.RWMutex
+	store   map[int64]*domain.User // map by TelegramID
+	saveErr error                  // used by tests to simulate save failures
 }
 
 func newMemUserRepo() *memUserRepo {
@@ -24,8 +22,8 @@ func newMemUserRepo() *memUserRepo {
 }
 
 func (m *memUserRepo) FindByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	u, ok := m.store[telegramID]
 	if !ok {
 		return nil, domain.ErrNotFound
@@ -35,103 +33,63 @@ func (m *memUserRepo) FindByTelegramID(ctx context.Context, telegramID int64) (*
 }
 
 func (m *memUserRepo) Save(ctx context.Context, user *domain.User) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.saveErr != nil {
 		return m.saveErr
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	cp := *user
 	m.store[user.TelegramID] = &cp
 	return nil
 }
 
-// ----------------------
-// memPlanRepo (shared)
-// ----------------------
-type memPlanRepo struct {
-	mu      sync.Mutex
-	byID    map[string]*domain.SubscriptionPlan
-	nameTo  map[string]string
-	saveErr error
+func (m *memUserRepo) CountUsers(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.store), nil
 }
 
-func newMemPlanRepo() *memPlanRepo {
-	return &memPlanRepo{
-		byID:   make(map[string]*domain.SubscriptionPlan),
-		nameTo: make(map[string]string),
+func (m *memUserRepo) CountInactiveUsers(ctx context.Context, inactiveSince time.Time) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	cnt := 0
+	for _, u := range m.store {
+		la := u.LastActiveAt
+		if la.IsZero() {
+			if u.RegisteredAt.Before(inactiveSince) || u.RegisteredAt.Equal(inactiveSince) {
+				cnt++
+			}
+			continue
+		}
+		if la.Before(inactiveSince) || la.Equal(inactiveSince) {
+			cnt++
+		}
 	}
+	return cnt, nil
 }
 
-func (m *memPlanRepo) Save(ctx context.Context, p *domain.SubscriptionPlan) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.saveErr != nil {
-		return m.saveErr
-	}
-	if p.ID == "" {
-		p.ID = uuid.NewString()
-	}
-	// unique name check
-	if existing, ok := m.nameTo[p.Name]; ok && existing != p.ID {
-		return errors.New("plan name already exists")
-	}
-	cp := *p
-	m.byID[p.ID] = &cp
-	m.nameTo[p.Name] = p.ID
-	return nil
-}
-
-func (m *memPlanRepo) FindByID(ctx context.Context, id string) (*domain.SubscriptionPlan, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	p, ok := m.byID[id]
-	if !ok {
-		return nil, domain.ErrNotFound
-	}
-	cp := *p
-	return &cp, nil
-}
-
-func (m *memPlanRepo) ListAll(ctx context.Context) ([]*domain.SubscriptionPlan, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]*domain.SubscriptionPlan, 0, len(m.byID))
-	for _, p := range m.byID {
-		cp := *p
-		out = append(out, &cp)
-	}
-	return out, nil
-}
-
-// ----------------------
-// memSubRepo (shared) - minimal for subscription tests
-// ----------------------
+// memSubRepo provides in-memory subscriptions for tests, and satisfies SubscriptionRepository including stats methods.
 type memSubRepo struct {
-	mu      sync.Mutex
-	store   map[string]*domain.UserSubscription // keyed by userID for simplicity
-	saveErr error
+	mu   sync.RWMutex
+	subs map[string]*domain.UserSubscription // map userID -> subscription
 }
 
 func newMemSubRepo() *memSubRepo {
-	return &memSubRepo{store: make(map[string]*domain.UserSubscription)}
+	return &memSubRepo{subs: make(map[string]*domain.UserSubscription)}
 }
 
-func (m *memSubRepo) Save(ctx context.Context, s *domain.UserSubscription) error {
+func (m *memSubRepo) Save(ctx context.Context, sub *domain.UserSubscription) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.saveErr != nil {
-		return m.saveErr
-	}
-	cp := *s
-	m.store[s.UserID] = &cp
+	cp := *sub
+	m.subs[sub.UserID] = &cp
 	return nil
 }
 
 func (m *memSubRepo) FindActiveByUser(ctx context.Context, userID string) (*domain.UserSubscription, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.store[userID]
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.subs[userID]
 	if !ok {
 		return nil, domain.ErrNotFound
 	}
@@ -140,12 +98,83 @@ func (m *memSubRepo) FindActiveByUser(ctx context.Context, userID string) (*doma
 }
 
 func (m *memSubRepo) FindExpiring(ctx context.Context, withinDays int) ([]*domain.UserSubscription, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var out []*domain.UserSubscription
+	cut := time.Now().Add(time.Duration(withinDays) * 24 * time.Hour)
+	for _, s := range m.subs {
+		if s.Active && s.ExpiresAt.Before(cut) {
+			cp := *s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+// CountActiveByPlan implements the new statistics method: map[planName]count
+func (m *memSubRepo) CountActiveByPlan(ctx context.Context) (map[string]int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make(map[string]int)
+	for _, s := range m.subs {
+		if s.Active {
+			out[s.PlanID] = out[s.PlanID] + 1
+		}
+	}
+	return out, nil
+}
+
+// TotalRemainingCredits returns sum of remaining credits for active subscriptions.
+func (m *memSubRepo) TotalRemainingCredits(ctx context.Context) (int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	sum := 0
+	for _, s := range m.subs {
+		if s.Active {
+			sum += s.RemainingCredits
+		}
+	}
+	return sum, nil
+}
+
+// memPlanRepo minimal mock used by tests
+type memPlanRepo struct {
+	mu    sync.RWMutex
+	plans map[string]*domain.SubscriptionPlan
+}
+
+func newMemPlanRepo() *memPlanRepo {
+	return &memPlanRepo{plans: make(map[string]*domain.SubscriptionPlan)}
+}
+
+func (m *memPlanRepo) Save(ctx context.Context, p *domain.SubscriptionPlan) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := []*domain.UserSubscription{}
-	// naive: include all active for tests; specific tests can seed accordingly
-	for _, s := range m.store {
-		cp := *s
+	cp := *p
+	if cp.ID == "" {
+		cp.ID = fmt.Sprintf("plan-%d", time.Now().UnixNano())
+	}
+	m.plans[cp.ID] = &cp
+	return nil
+}
+
+func (m *memPlanRepo) FindByID(ctx context.Context, id string) (*domain.SubscriptionPlan, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.plans[id]
+	if !ok {
+		return nil, domain.ErrNotFound
+	}
+	cp := *p
+	return &cp, nil
+}
+
+func (m *memPlanRepo) ListAll(ctx context.Context) ([]*domain.SubscriptionPlan, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*domain.SubscriptionPlan, 0, len(m.plans))
+	for _, p := range m.plans {
+		cp := *p
 		out = append(out, &cp)
 	}
 	return out, nil
