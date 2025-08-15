@@ -135,24 +135,20 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 }
 
 // SendMessage sends a text message to the user identified by domain userID
-// It looks up the TelegramID via userRepo.FindByTelegramID (we have domain User -> TelegramID).
+// It looks up the TelegramID via userRepo.FindByID
 func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, userID string, text string) error {
-	// The domain UserRepository has no FindByID in your repo; we already store TelegramID on user,
-	// so try to find by TelegramID or use your repo Save mapping approach. Here we attempt to find by
-	// searching users (if your repo has FindByID, replace with that).
-	// For simplicity, we assume userID is the internal ID and userRepo has Save/FindByTelegramID only.
-	// If you have a FindByID method, replace the below logic with that call.
-	// We'll attempt to scan all (not ideal) — but best is to have FindByID implemented.
-	//
-	// NOTE: earlier you fixed usage to use user.TelegramID. So we assume you will call SendMessage
-	// using the domain User object's TelegramID elsewhere. If you prefer, change signature to accept tgID.
-
-	// We'll attempt to call a FindByTelegramID-like reverse mapping is not available.
-	// So we try to find user by scanning — but this is inefficient. Best approach: add FindByID in repo.
-	return errors.New("SendMessage: please call SendMessageWithTelegramID or add FindByID in UserRepository")
+	// Attempt to find domain user by internal ID
+	user, err := r.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("SendMessage: find user by id %s: %w", userID, err)
+	}
+	if user == nil {
+		return fmt.Errorf("SendMessage: user not found: %s", userID)
+	}
+	return r.SendMessageWithTelegramID(ctx, user.TelegramID, text)
 }
 
-// helper: SendMessageWithTelegramID — convenience that sends directly using Telegram chat id.
+// SendMessageWithTelegramID — convenience that sends directly using Telegram chat id.
 func (r *RealTelegramBotAdapter) SendMessageWithTelegramID(ctx context.Context, tgID int64, text string) error {
 	msg := tgbotapi.NewMessage(tgID, text)
 	_, err := r.bot.Send(msg)

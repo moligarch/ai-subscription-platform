@@ -80,6 +80,42 @@ SELECT id, telegram_id, username, registered_at, last_active_at
 	}, nil
 }
 
+func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (*model.User, error) {
+	const sql = `
+SELECT id, telegram_id, username, registered_at, last_active_at
+  FROM users
+ WHERE id = $1;
+`
+	row := r.pool.QueryRow(ctx, sql, id)
+
+	var (
+		userID       string
+		telegramID   int64
+		username     *string
+		registeredAt time.Time
+		lastActive   *time.Time
+	)
+	if err := row.Scan(&userID, &telegramID, &username, &registeredAt, &lastActive); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("postgres: querying user by id: %w", err)
+	}
+	u := &model.User{
+		ID:           userID,
+		TelegramID:   telegramID,
+		Username:     "",
+		RegisteredAt: registeredAt,
+	}
+	if username != nil {
+		u.Username = *username
+	}
+	if lastActive != nil {
+		u.LastActiveAt = *lastActive
+	}
+	return u, nil
+}
+
 // CountUsers returns total users count.
 func (r *PostgresUserRepository) CountUsers(ctx context.Context) (int, error) {
 	const sql = `SELECT COUNT(*) FROM users;`

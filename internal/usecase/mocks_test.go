@@ -44,6 +44,18 @@ func (m *memUserRepo) Save(ctx context.Context, user *model.User) error {
 	return nil
 }
 
+func (m *memUserRepo) FindByID(ctx context.Context, id string) (*model.User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, u := range m.store {
+		if u.ID == id {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrNotFound
+}
+
 func (m *memUserRepo) CountUsers(ctx context.Context) (int, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
