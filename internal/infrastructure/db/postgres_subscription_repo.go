@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/repository"
+
+	"github.com/jackc/pgx/v4"
+	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 // Ensure interface compliance:
@@ -104,4 +105,48 @@ SELECT id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active,
 		out = append(out, &us)
 	}
 	return out, nil
+}
+
+// CountActiveByPlan returns a map: plan name -> count of active subscriptions
+func (r *PostgresSubscriptionRepo) CountActiveByPlan(ctx context.Context) (map[string]int, error) {
+	const sql = `
+SELECT p.name, COUNT(*)::int
+  FROM user_subscriptions s
+  JOIN subscription_plans p ON s.plan_id = p.id
+ WHERE s.is_active = TRUE
+ GROUP BY p.name;
+`
+	rows, err := r.pool.Query(ctx, sql)
+	if err != nil {
+		return nil, fmt.Errorf("postgres CountActiveByPlan query: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var name string
+		var cnt int
+		if err := rows.Scan(&name, &cnt); err != nil {
+			return nil, fmt.Errorf("postgres CountActiveByPlan scan: %w", err)
+		}
+		result[name] = cnt
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres CountActiveByPlan rows: %w", err)
+	}
+	return result, nil
+}
+
+// TotalRemainingCredits returns sum(remaining_credits) over active subscriptions.
+func (r *PostgresSubscriptionRepo) TotalRemainingCredits(ctx context.Context) (int, error) {
+	const sql = `
+SELECT COALESCE(SUM(remaining_credits)::int, 0) FROM user_subscriptions
+WHERE is_active = TRUE;
+`
+	var total int
+	row := r.pool.QueryRow(ctx, sql)
+	if err := row.Scan(&total); err != nil {
+		return 0, fmt.Errorf("postgres TotalRemainingCredits query: %w", err)
+	}
+	return total, nil
 }

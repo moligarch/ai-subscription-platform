@@ -5,17 +5,18 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/repository"
 
 	"github.com/google/uuid"
 )
 
 // UserUseCase handles user-related business logic.
 type UserUseCase struct {
-	userRepo domain.UserRepository
+	userRepo repository.UserRepository
 }
 
 // NewUserUseCase constructs a UserUseCase.
-func NewUserUseCase(userRepo domain.UserRepository) *UserUseCase {
+func NewUserUseCase(userRepo repository.UserRepository) *UserUseCase {
 	return &UserUseCase{userRepo: userRepo}
 }
 

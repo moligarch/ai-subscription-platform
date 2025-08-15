@@ -4,11 +4,11 @@ import "time"
 
 // SubscriptionPlan defines the parameters of a subscription.
 type SubscriptionPlan struct {
-    ID           string
-    Name         string
-    DurationDays int
-    Credits      int
-    CreatedAt    time.Time
+	ID           string
+	Name         string
+	DurationDays int
+	Credits      int
+	CreatedAt    time.Time
 }
 
 // NewSubscriptionPlan validates and constructs a plan.
@@ -27,14 +27,14 @@ func NewSubscriptionPlan(id, name string, durationDays, credits int) (*Subscript
 
 // UserSubscription represents a user’s individual subscription instance.
 type UserSubscription struct {
-    ID               string
-    UserID           string
-    PlanID           string
-    StartAt          time.Time
-    ExpiresAt        time.Time
-    RemainingCredits int
-    Active           bool
-    CreatedAt        time.Time
+	ID               string
+	UserID           string
+	PlanID           string
+	StartAt          time.Time
+	ExpiresAt        time.Time
+	RemainingCredits int
+	Active           bool
+	CreatedAt        time.Time
 }
 
 // NewUserSubscription creates a new subscription for a user.

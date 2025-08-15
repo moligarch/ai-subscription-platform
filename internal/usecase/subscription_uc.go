@@ -1,12 +1,14 @@
+// File: internal/usecase/subscription_uc.go
 package usecase
 
 import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/repository"
+
+	"github.com/google/uuid"
 )
 
 // SubscriptionUseCase manages user subscriptions.
@@ -89,4 +91,15 @@ func (uc *SubscriptionUseCase) DeductCredit(ctx context.Context, sub *domain.Use
 		return nil, err
 	}
 	return sub, nil
+}
+
+// CountActiveSubscriptionsByPlan returns map of plan name to active subscription counts.
+func (uc *SubscriptionUseCase) CountActiveSubscriptionsByPlan(ctx context.Context) (map[string]int, error) {
+	// Delegate to repository implementation (DB or in-memory)
+	return uc.subRepo.CountActiveByPlan(ctx)
+}
+
+// TotalRemainingCredits returns sum of all remaining credits of active subscriptions.
+func (uc *SubscriptionUseCase) TotalRemainingCredits(ctx context.Context) (int, error) {
+	return uc.subRepo.TotalRemainingCredits(ctx)
 }
