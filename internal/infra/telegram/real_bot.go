@@ -12,11 +12,11 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
 
+	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
-	"telegram-ai-subscription/internal/usecase"
 )
 
 // RealTelegramBotAdapter implements adapter.TelegramBotAdapter using tgbotapi with concurrent polling.
@@ -24,7 +24,7 @@ type RealTelegramBotAdapter struct {
 	bot         *tgbotapi.BotAPI
 	cfg         *config.BotConfig
 	userRepo    repository.UserRepository
-	statsUC     *usecase.StatsUseCase
+	facade      *application.BotFacade
 	adminIDsMap map[int64]struct{}
 
 	// updateWorkers is how many goroutines will concurrently process updates.
@@ -34,16 +34,16 @@ type RealTelegramBotAdapter struct {
 }
 
 // NewRealTelegramBotAdapter creates a new bot adapter.
-// statsUC is required for admin /stats command. updateWorkers controls concurrency.
-func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, statsUC *usecase.StatsUseCase, updateWorkers int) (*RealTelegramBotAdapter, error) {
+// facade is required for admin /stats command. updateWorkers controls concurrency.
+func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, facade *application.BotFacade, updateWorkers int) (*RealTelegramBotAdapter, error) {
 	if cfg == nil {
 		return nil, errors.New("bot config is nil")
 	}
 	if userRepo == nil {
 		return nil, errors.New("userRepo is nil")
 	}
-	if statsUC == nil {
-		return nil, errors.New("statsUC is nil")
+	if facade == nil {
+		return nil, errors.New("bot facade is nil")
 	}
 	if updateWorkers <= 0 {
 		updateWorkers = 5
@@ -63,7 +63,7 @@ func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRe
 		bot:           bot,
 		cfg:           cfg,
 		userRepo:      userRepo,
-		statsUC:       statsUC,
+		facade:        facade,
 		adminIDsMap:   adminMap,
 		updateWorkers: updateWorkers,
 	}, nil
@@ -213,7 +213,10 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 		if !r.isAdmin(user.TelegramID) {
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to use this command.")
 		}
-		statsText, err := r.getStatsText(ctx)
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Stats feature not available.")
+		}
+		statsText, err := r.facade.HandleStats(ctx)
 		if err != nil {
 			log.Printf("[telegram] failed to get stats: %v", err)
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to get stats. Please try again later.")
@@ -228,32 +231,4 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 func (r *RealTelegramBotAdapter) isAdmin(tgID int64) bool {
 	_, ok := r.adminIDsMap[tgID]
 	return ok
-}
-
-func (r *RealTelegramBotAdapter) getStatsText(ctx context.Context) (string, error) {
-	totalUsers, inactiveUsers, byPlan, totalCredits, err := r.statsUC.GetCounts(ctx, 30*24*time.Hour)
-	if err != nil {
-		return "", err
-	}
-	weekCents, monthCents, yearCents, err := r.statsUC.GetPaymentsForPeriods(ctx)
-	if err != nil {
-		return "", err
-	}
-
-	formatMoney := func(cents float64) string { return fmt.Sprintf("%.2f", float64(cents)/100.0) }
-
-	var sb strings.Builder
-	sb.WriteString("📊 System Statistics:\n\n")
-	sb.WriteString(fmt.Sprintf("👥 Users: %d\n", totalUsers))
-	sb.WriteString(fmt.Sprintf("🚫 Deactivated (30d): %d\n\n", inactiveUsers))
-	sb.WriteString("📦 Active subscriptions by plan:\n")
-	for name, cnt := range byPlan {
-		sb.WriteString(fmt.Sprintf("  - %s: %d\n", name, cnt))
-	}
-	sb.WriteString("\n💰 Payments:\n")
-	sb.WriteString(fmt.Sprintf("  - This Week: %s\n", formatMoney(weekCents)))
-	sb.WriteString(fmt.Sprintf("  - This Month: %s\n", formatMoney(monthCents)))
-	sb.WriteString(fmt.Sprintf("  - This Year: %s\n\n", formatMoney(yearCents)))
-	sb.WriteString(fmt.Sprintf("🎫 Total Active Credits: %d\n", totalCredits))
-	return sb.String(), nil
 }
