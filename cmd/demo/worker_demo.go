@@ -12,11 +12,11 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/config"
-	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/infrastructure/db"
-	"telegram-ai-subscription/internal/infrastructure/scheduler"
-	infraTelegram "telegram-ai-subscription/internal/infrastructure/telegram"
-	"telegram-ai-subscription/internal/infrastructure/worker"
+	"telegram-ai-subscription/internal/domain/model"
+	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/scheduler"
+	infraTelegram "telegram-ai-subscription/internal/infra/telegram"
+	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 )
 
@@ -35,9 +35,9 @@ func main() {
 	defer pool.Close()
 
 	// repos and usecases/executor
-	userRepo := db.NewPostgresUserRepository(pool)
-	planRepo := db.NewPostgresPlanRepo(pool)
-	subRepo := db.NewPostgresSubscriptionRepo(pool)
+	userRepo := pg.NewPostgresUserRepository(pool)
+	planRepo := pg.NewPostgresPlanRepo(pool)
+	subRepo := pg.NewPostgresSubscriptionRepo(pool)
 
 	userUC := usecase.NewUserUseCase(userRepo)
 	// executor used by worker pool
@@ -57,7 +57,7 @@ func main() {
 
 	// create demo plan if not exists
 	planID := uuid.NewString()
-	plan := &domain.SubscriptionPlan{
+	plan := &model.SubscriptionPlan{
 		ID:           planID,
 		Name:         "Worker-Demo-Plan",
 		DurationDays: 7,

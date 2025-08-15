@@ -14,7 +14,8 @@ import (
 
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/usecase"
 )
 
@@ -173,7 +174,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	if err != nil {
 		// if not found, attempt to register a new domain user
 		if errors.Is(err, domain.ErrNotFound) {
-			newUser := &domain.User{
+			newUser := &model.User{
 				ID:           uuid.NewString(),
 				TelegramID:   tgUser.ID,
 				Username:     tgUser.UserName,
@@ -205,7 +206,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Sorry, I didn't understand that. Send /help for commands.")
 }
 
-func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *domain.User, text string) error {
+func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.User, text string) error {
 	cmd := strings.TrimSpace(text)
 	switch {
 	case cmd == "/start":

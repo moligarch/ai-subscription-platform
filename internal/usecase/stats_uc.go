@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
 // StatsUseCase aggregates read-only statistics used by admin endpoints / bot commands.

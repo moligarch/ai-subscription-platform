@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/config"
-	"telegram-ai-subscription/internal/infrastructure/db"
-	"telegram-ai-subscription/internal/infrastructure/telegram"
+	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/telegram"
 	"telegram-ai-subscription/internal/usecase"
 )
 
@@ -42,17 +42,17 @@ func main() {
 	defer pool.Close()
 
 	// Repositories
-	userRepo := db.NewPostgresUserRepository(pool)
+	userRepo := pg.NewPostgresUserRepository(pool)
 	if userRepo == nil {
 		log.Fatalf("failed to init user repo")
 	}
 
-	subRepo := db.NewPostgresSubscriptionRepo(pool)
+	subRepo := pg.NewPostgresSubscriptionRepo(pool)
 	if subRepo == nil {
 		log.Fatalf("failed to init subscription repo")
 	}
 
-	payRepo := db.NewPostgresPaymentRepo(pool)
+	payRepo := pg.NewPostgresPaymentRepo(pool)
 	if payRepo == nil {
 		log.Fatalf("failed to init payment repo")
 	}

@@ -1,11 +1,12 @@
-package db
+package postgres
 
 import (
 	"context"
 	"fmt"
 
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -22,7 +23,7 @@ func NewPostgresSubscriptionRepo(pool *pgxpool.Pool) *PostgresSubscriptionRepo {
 	return &PostgresSubscriptionRepo{pool: pool}
 }
 
-func (r *PostgresSubscriptionRepo) Save(ctx context.Context, us *domain.UserSubscription) error {
+func (r *PostgresSubscriptionRepo) Save(ctx context.Context, us *model.UserSubscription) error {
 	const sql = `
 INSERT INTO user_subscriptions
   (id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active, created_at)
@@ -48,14 +49,14 @@ ON CONFLICT (id) DO UPDATE
 	return nil
 }
 
-func (r *PostgresSubscriptionRepo) FindActiveByUser(ctx context.Context, userID string) (*domain.UserSubscription, error) {
+func (r *PostgresSubscriptionRepo) FindActiveByUser(ctx context.Context, userID string) (*model.UserSubscription, error) {
 	const sql = `
 SELECT id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active, created_at
   FROM user_subscriptions
  WHERE user_id=$1 AND is_active = true;
 `
 	row := r.pool.QueryRow(ctx, sql, userID)
-	var us domain.UserSubscription
+	var us model.UserSubscription
 	if err := row.Scan(
 		&us.ID,
 		&us.UserID,
@@ -74,7 +75,7 @@ SELECT id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active,
 	return &us, nil
 }
 
-func (r *PostgresSubscriptionRepo) FindExpiring(ctx context.Context, withinDays int) ([]*domain.UserSubscription, error) {
+func (r *PostgresSubscriptionRepo) FindExpiring(ctx context.Context, withinDays int) ([]*model.UserSubscription, error) {
 	const sql = `
 SELECT id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active, created_at
   FROM user_subscriptions
@@ -87,9 +88,9 @@ SELECT id, user_id, plan_id, start_at, expires_at, remaining_credits, is_active,
 	}
 	defer rows.Close()
 
-	var out []*domain.UserSubscription
+	var out []*model.UserSubscription
 	for rows.Next() {
-		var us domain.UserSubscription
+		var us model.UserSubscription
 		if err := rows.Scan(
 			&us.ID,
 			&us.UserID,

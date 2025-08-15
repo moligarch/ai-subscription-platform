@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 
 	"github.com/google/uuid"
 )
@@ -26,7 +27,7 @@ func NewSubscriptionUseCase(
 }
 
 // Subscribe either creates a new subscription or extends an existing one.
-func (uc *SubscriptionUseCase) Subscribe(ctx context.Context, userID, planID string) (*domain.UserSubscription, error) {
+func (uc *SubscriptionUseCase) Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error) {
 	// 1. Load the plan
 	plan, err := uc.planRepo.FindByID(ctx, planID)
 	if err != nil {
@@ -42,7 +43,7 @@ func (uc *SubscriptionUseCase) Subscribe(ctx context.Context, userID, planID str
 	now := time.Now()
 	if err == domain.ErrNotFound {
 		// 3a. No active subscription → create new
-		sub := &domain.UserSubscription{
+		sub := &model.UserSubscription{
 			ID:               uuid.NewString(),
 			UserID:           userID,
 			PlanID:           planID,
@@ -69,12 +70,12 @@ func (uc *SubscriptionUseCase) Subscribe(ctx context.Context, userID, planID str
 }
 
 // GetActiveSubscription retrieves the current active subscription for a user.
-func (uc *SubscriptionUseCase) GetActiveSubscription(ctx context.Context, userID string) (*domain.UserSubscription, error) {
+func (uc *SubscriptionUseCase) GetActiveSubscription(ctx context.Context, userID string) (*model.UserSubscription, error) {
 	return uc.subRepo.FindActiveByUser(ctx, userID)
 }
 
 // DeductCredit uses up one credit on the given subscription.
-func (uc *SubscriptionUseCase) DeductCredit(ctx context.Context, sub *domain.UserSubscription) (*domain.UserSubscription, error) {
+func (uc *SubscriptionUseCase) DeductCredit(ctx context.Context, sub *model.UserSubscription) (*model.UserSubscription, error) {
 	// Check expiration
 	if !sub.Active || time.Now().After(sub.ExpiresAt) {
 		return nil, domain.ErrExpiredSubscription

@@ -1,29 +1,10 @@
-package domain
+package model
 
-import "time"
+import (
+	"time"
 
-// SubscriptionPlan defines the parameters of a subscription.
-type SubscriptionPlan struct {
-	ID           string
-	Name         string
-	DurationDays int
-	Credits      int
-	CreatedAt    time.Time
-}
-
-// NewSubscriptionPlan validates and constructs a plan.
-func NewSubscriptionPlan(id, name string, durationDays, credits int) (*SubscriptionPlan, error) {
-	if id == "" || name == "" || durationDays <= 0 || credits < 0 {
-		return nil, ErrInvalidArgument
-	}
-	return &SubscriptionPlan{
-		ID:           id,
-		Name:         name,
-		DurationDays: durationDays,
-		Credits:      credits,
-		CreatedAt:    time.Now(),
-	}, nil
-}
+	"telegram-ai-subscription/internal/domain"
+)
 
 // UserSubscription represents a user’s individual subscription instance.
 type UserSubscription struct {
@@ -40,7 +21,7 @@ type UserSubscription struct {
 // NewUserSubscription creates a new subscription for a user.
 func NewUserSubscription(id, userID string, plan *SubscriptionPlan) (*UserSubscription, error) {
 	if id == "" || userID == "" || plan == nil {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 	now := time.Now()
 	return &UserSubscription{
@@ -58,10 +39,10 @@ func NewUserSubscription(id, userID string, plan *SubscriptionPlan) (*UserSubscr
 // UseCredit deducts one credit, returns updated copy or error.
 func (us *UserSubscription) UseCredit() (*UserSubscription, error) {
 	if !us.Active || time.Now().After(us.ExpiresAt) {
-		return nil, ErrExpiredSubscription
+		return nil, domain.ErrExpiredSubscription
 	}
 	if us.RemainingCredits <= 0 {
-		return nil, ErrInsufficientCredits
+		return nil, domain.ErrInsufficientCredits
 	}
 	copy := *us
 	copy.RemainingCredits--
@@ -71,7 +52,7 @@ func (us *UserSubscription) UseCredit() (*UserSubscription, error) {
 // Extend renews the subscription from its expiry or from now if expired.
 func (us *UserSubscription) Extend(plan *SubscriptionPlan) (*UserSubscription, error) {
 	if plan == nil {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 	copy := *us
 	start := us.ExpiresAt

@@ -1,6 +1,7 @@
-package domain
+package model
 
 import (
+	"telegram-ai-subscription/internal/domain"
 	"time"
 )
 
@@ -26,7 +27,7 @@ type Payment struct {
 // NewPayment constructs a Payment.
 func NewPayment(id, userID, method string, amount float64) (*Payment, error) {
 	if id == "" || userID == "" || method == "" || amount <= 0 {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 	return &Payment{
 		ID:        id,

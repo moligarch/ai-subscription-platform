@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"telegram-ai-subscription/internal/domain/adapter"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
 // NotificationUseCase finds expiring subscriptions and sends notifications using a Telegram adapter.

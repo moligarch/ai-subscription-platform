@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
 // PaymentUseCase orchestrates payment flows.
@@ -31,9 +31,9 @@ func NewPaymentUseCase(
 }
 
 // Initiate creates a Payment and returns the payment entity.
-func (p *PaymentUseCase) Initiate(ctx context.Context, userID, method string, amount float64) (*domain.Payment, error) {
-	payID := domain.NewUUID()
-	pay, err := domain.NewPayment(payID, userID, method, amount)
+func (p *PaymentUseCase) Initiate(ctx context.Context, userID, method string, amount float64) (*model.Payment, error) {
+	payID := model.NewUUID()
+	pay, err := model.NewPayment(payID, userID, method, amount)
 	if err != nil {
 		return nil, err
 	}
@@ -44,12 +44,12 @@ func (p *PaymentUseCase) Initiate(ctx context.Context, userID, method string, am
 }
 
 // Confirm handles the gateway callback, updates payment & subscription.
-func (p *PaymentUseCase) Confirm(ctx context.Context, payID string, success bool) (*domain.Payment, error) {
+func (p *PaymentUseCase) Confirm(ctx context.Context, payID string, success bool) (*model.Payment, error) {
 	existing, err := p.payRepo.FindByID(ctx, payID)
 	if err != nil {
 		return nil, err
 	}
-	var updated *domain.Payment
+	var updated *model.Payment
 	if success {
 		updated = existing.MarkSuccess()
 		// upon success, subscribe user with chosen plan/amount

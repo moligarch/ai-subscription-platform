@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 
 	"github.com/google/uuid"
 )
@@ -48,9 +49,9 @@ func (e *SubscriptionExecutor) ExecuteSubscribe(ctx context.Context, userID, pla
 	}
 
 	now := time.Now()
-	var sub *domain.UserSubscription
+	var sub *model.UserSubscription
 	if err == domain.ErrNotFound {
-		sub = &domain.UserSubscription{
+		sub = &model.UserSubscription{
 			ID:               uuid.NewString(),
 			UserID:           userID,
 			PlanID:           planID,
