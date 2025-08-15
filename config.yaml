@@ -1,20 +1,22 @@
 bot:
   token: "DUMMY"        # not used now
   mode: "polling"
-  port: 0
-  url: ""
+  port: 9000
+  url: "http://localhost:9000"
+  admin_ids:
+    - 100318530
 
 admin:
   port: 9090
 
 database:
-  url: "postgres://user:pass@127.0.0.1:5432/mydb?sslmode=disable"
+  url: "postgres://postgres:postgres@127.0.0.1:5432/subscription_test?sslmode=disable"
 
 redis:
   url: "redis://localhost:6379"
   password: ""
-  db: 0
-  ttl: "24h"
+  db: 1
+  ttl: "1h"
 
 ai:
   openai_key: "sk-..."
