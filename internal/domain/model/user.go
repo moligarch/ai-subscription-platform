@@ -1,9 +1,10 @@
-package domain
+package model
 
 import (
 	"time"
 
 	"github.com/google/uuid"
+	"telegram-ai-subscription/internal/domain"
 )
 
 // User is an immutable domain entity.
@@ -18,13 +19,13 @@ type User struct {
 // NewUser constructs and validates a User.
 func NewUser(id string, tgID int64, username string) (*User, error) {
 	if id == "" {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 	if tgID <= 0 {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 	if username == "" {
-		return nil, ErrInvalidArgument
+		return nil, domain.ErrInvalidArgument
 	}
 
 	return &User{ID: id, TelegramID: tgID, Username: username, RegisteredAt: time.Now(), LastActiveAt: time.Now()}, nil

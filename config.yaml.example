@@ -1,10 +1,10 @@
 bot:
-  token: "DUMMY"        # not used now
+  token: "BOT_TOKEN"
   mode: "polling"
   port: 9000
   url: "http://localhost:9000"
   admin_ids:
-    - 100318530
+    - 12345689
 
 admin:
   port: 9090

@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"telegram-ai-subscription/internal/domain/adapter"
+	"telegram-ai-subscription/internal/domain/ports/adapter"
 )
 
 // NoopBotAdapter implements adapter.TelegramBotAdapter for local/dev testing.

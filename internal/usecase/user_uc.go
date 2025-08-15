@@ -5,7 +5,8 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 
 	"github.com/google/uuid"
 )
@@ -22,7 +23,7 @@ func NewUserUseCase(userRepo repository.UserRepository) *UserUseCase {
 
 // RegisterOrFetch ensures a user exists, creating if needed.
 // If username is non-nil, it updates it on conflict.
-func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*domain.User, error) {
+func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error) {
 	usr, err := u.userRepo.FindByTelegramID(ctx, tgID)
 	if err == nil {
 		// Optionally update username if changed
@@ -39,7 +40,7 @@ func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username 
 		return nil, err
 	}
 	// create new
-	newUsr := &domain.User{
+	newUsr := &model.User{
 		ID:           uuid.NewString(),
 		TelegramID:   tgID,
 		Username:     username,
@@ -53,6 +54,6 @@ func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username 
 }
 
 // GetByTelegramID retrieves user or ErrNotFound.
-func (u *UserUseCase) GetByTelegramID(ctx context.Context, tgID int64) (*domain.User, error) {
+func (u *UserUseCase) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
 	return u.userRepo.FindByTelegramID(ctx, tgID)
 }

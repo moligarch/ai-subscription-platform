@@ -11,9 +11,10 @@ import (
 
 	"github.com/jackc/pgx/v4/pgxpool"
 
+	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
-	"telegram-ai-subscription/internal/infrastructure/db"
-	"telegram-ai-subscription/internal/infrastructure/telegram"
+	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/telegram"
 	"telegram-ai-subscription/internal/usecase"
 )
 
@@ -42,30 +43,47 @@ func main() {
 	defer pool.Close()
 
 	// Repositories
-	userRepo := db.NewPostgresUserRepository(pool)
+	userRepo := pg.NewPostgresUserRepository(pool)
 	if userRepo == nil {
 		log.Fatalf("failed to init user repo")
 	}
 
-	subRepo := db.NewPostgresSubscriptionRepo(pool)
+	planRepo := pg.NewPostgresPlanRepo(pool)
+	if planRepo == nil {
+		log.Fatalf("failed to init plan repo")
+	}
+
+	subRepo := pg.NewPostgresSubscriptionRepo(pool)
 	if subRepo == nil {
 		log.Fatalf("failed to init subscription repo")
 	}
 
-	payRepo := db.NewPostgresPaymentRepo(pool)
+	payRepo := pg.NewPostgresPaymentRepo(pool)
 	if payRepo == nil {
 		log.Fatalf("failed to init payment repo")
 	}
 
 	// Usecases
+	userUC := usecase.NewUserUseCase(userRepo)
+	planUC := usecase.NewPlanUseCase(planRepo)
+	subUC := usecase.NewSubscriptionUseCase(planRepo, subRepo)
+	payUC := usecase.NewPaymentUseCase(payRepo, subUC)
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo)
 
-	// Create RealTelegramBotAdapter with concurrency workers (5 here)
-	updateWorkers := 5
-	botAdapter, err := telegram.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, statsUC, updateWorkers)
+	// Notification usecase: pass subRepo, bot may be set later
+	notifUC := usecase.NewNotificationUseCase(subRepo, nil)
+
+	// create facade (pass notifUC even though bot is not set yet)
+	botFacade := application.NewBotFacade(userUC, planUC, subUC, payUC, statsUC, notifUC)
+
+	// pass facade to telegram adapter constructor
+	botAdapter, err := telegram.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, botFacade, 5)
 	if err != nil {
 		log.Fatalf("failed to init telegram bot adapter: %v", err)
 	}
+
+	// Now that we have the real bot adapter, set it into the notification usecase so it can send messages
+	notifUC.SetBot(botAdapter)
 
 	// Start polling updates in background
 	go func() {

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"telegram-ai-subscription/internal/domain/adapter"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
 // NotificationUseCase finds expiring subscriptions and sends notifications using a Telegram adapter.
@@ -17,7 +17,7 @@ type NotificationUseCase struct {
 
 // NewNotificationUseCase constructs and returns a NotificationUseCase.
 // subRepo: repository to read subscriptions (FindExpiring).
-// bot: adapter to actually send Telegram messages (can be noop or real).
+// bot: adapter to actually send Telegram messages (can be nil initially).
 func NewNotificationUseCase(subRepo repository.SubscriptionRepository, bot adapter.TelegramBotAdapter) *NotificationUseCase {
 	return &NotificationUseCase{
 		subRepo: subRepo,
@@ -25,11 +25,20 @@ func NewNotificationUseCase(subRepo repository.SubscriptionRepository, bot adapt
 	}
 }
 
+// SetBot allows wiring the bot adapter after construction (avoids circular init ordering).
+func (n *NotificationUseCase) SetBot(bot adapter.TelegramBotAdapter) {
+	n.bot = bot
+}
+
 // CheckAndNotify finds subscriptions that will expire within `withinDays` days and notifies their users.
 // Returns number of successful notifications and the first error encountered (if any).
 func (n *NotificationUseCase) CheckAndNotify(ctx context.Context, withinDays int) (int, error) {
 	if withinDays <= 0 {
 		withinDays = 1
+	}
+
+	if n.bot == nil {
+		return 0, fmt.Errorf("notification bot not configured")
 	}
 
 	subs, err := n.subRepo.FindExpiring(ctx, withinDays)

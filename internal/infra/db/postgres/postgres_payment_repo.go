@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"context"
@@ -9,7 +9,8 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
 // PostgresPaymentRepo implements repository.PaymentRepository using Postgres.
@@ -24,7 +25,7 @@ func NewPostgresPaymentRepo(pool *pgxpool.Pool) *PostgresPaymentRepo {
 
 // Save inserts or updates a payment record.
 // DB columns assumed: id TEXT PRIMARY KEY, user_id TEXT, amount DOUBLE PRECISION, method TEXT, status TEXT, created_at TIMESTAMPTZ
-func (r *PostgresPaymentRepo) Save(ctx context.Context, p *domain.Payment) error {
+func (r *PostgresPaymentRepo) Save(ctx context.Context, p *model.Payment) error {
 	const sql = `
 INSERT INTO payments (id, user_id, amount, method, status, created_at)
 VALUES ($1,$2,$3,$4,$5,$6)
@@ -50,7 +51,7 @@ ON CONFLICT (id) DO UPDATE SET
 }
 
 // FindByID loads a payment by id. Returns domain.ErrNotFound if missing.
-func (r *PostgresPaymentRepo) FindByID(ctx context.Context, id string) (*domain.Payment, error) {
+func (r *PostgresPaymentRepo) FindByID(ctx context.Context, id string) (*model.Payment, error) {
 	const sql = `
 SELECT id, user_id, amount, method, status, created_at
 FROM payments
@@ -73,12 +74,12 @@ WHERE id = $1;
 		return nil, fmt.Errorf("postgres FindByID payment scan: %w", err)
 	}
 
-	p := &domain.Payment{
+	p := &model.Payment{
 		ID:        payID,
 		UserID:    userID,
 		Amount:    amount, // in Toman (float64)
 		Method:    method,
-		Status:    domain.PaymentStatus(status), // cast string -> PaymentStatus
+		Status:    model.PaymentStatus(status), // cast string -> PaymentStatus
 		CreatedAt: created,
 	}
 	return p, nil

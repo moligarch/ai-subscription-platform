@@ -1,13 +1,15 @@
-package db
+package postgres
 
 import (
 	"context"
 	"fmt"
 
+	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
+
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
 )
 
 // Ensure interface compliance:
@@ -21,7 +23,7 @@ func NewPostgresPlanRepo(pool *pgxpool.Pool) *PostgresPlanRepo {
 	return &PostgresPlanRepo{pool: pool}
 }
 
-func (r *PostgresPlanRepo) Save(ctx context.Context, plan *domain.SubscriptionPlan) error {
+func (r *PostgresPlanRepo) Save(ctx context.Context, plan *model.SubscriptionPlan) error {
 	const sql = `
 INSERT INTO subscription_plans (id, name, duration_days, credits, created_at)
 VALUES ($1, $2, $3, $4, $5)
@@ -39,14 +41,14 @@ ON CONFLICT (id) DO UPDATE
 	return nil
 }
 
-func (r *PostgresPlanRepo) FindByID(ctx context.Context, id string) (*domain.SubscriptionPlan, error) {
+func (r *PostgresPlanRepo) FindByID(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
 	const sql = `
 SELECT id, name, duration_days, credits, created_at
   FROM subscription_plans
  WHERE id = $1;
 `
 	row := r.pool.QueryRow(ctx, sql, id)
-	var p domain.SubscriptionPlan
+	var p model.SubscriptionPlan
 	if err := row.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.CreatedAt); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, domain.ErrNotFound
@@ -56,7 +58,7 @@ SELECT id, name, duration_days, credits, created_at
 	return &p, nil
 }
 
-func (r *PostgresPlanRepo) ListAll(ctx context.Context) ([]*domain.SubscriptionPlan, error) {
+func (r *PostgresPlanRepo) ListAll(ctx context.Context) ([]*model.SubscriptionPlan, error) {
 	const sql = `
 SELECT id, name, duration_days, credits, created_at
   FROM subscription_plans;
@@ -66,9 +68,9 @@ SELECT id, name, duration_days, credits, created_at
 		return nil, fmt.Errorf("ListAll plans: %w", err)
 	}
 	defer rows.Close()
-	var out []*domain.SubscriptionPlan
+	var out []*model.SubscriptionPlan
 	for rows.Next() {
-		var p domain.SubscriptionPlan
+		var p model.SubscriptionPlan
 		if err := rows.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.CreatedAt); err != nil {
 			return nil, err
 		}

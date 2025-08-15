@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 )
 
 func TestRegisterOrFetch_CreatesNewUser(t *testing.T) {
@@ -53,7 +54,7 @@ func TestRegisterOrFetch_ReturnsExistingUser(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemUserRepo()
 	// seed existing user
-	existing := &domain.User{
+	existing := &model.User{
 		ID:         "existing-id-1",
 		TelegramID: int64(7777),
 		Username:   "Existing",
@@ -230,7 +231,7 @@ func TestGetByTelegramID_FoundAndNotFound(t *testing.T) {
 	}
 
 	// seed and fetch
-	user := &domain.User{
+	user := &model.User{
 		ID:         "uid-100",
 		TelegramID: int64(100),
 		Username:   "U100",

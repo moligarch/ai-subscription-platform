@@ -1,4 +1,4 @@
-package db
+package postgres
 
 import (
 	"context"
@@ -9,7 +9,11 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
+
+var _ repository.UserRepository = (*PostgresUserRepository)(nil)
 
 // PostgresUserRepository is a Postgres adapter for domain.UserRepository.
 type PostgresUserRepository struct {
@@ -23,7 +27,7 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 
 // Save inserts or updates a user.
 // On conflict of telegram_id, updates username and registered_at.
-func (r *PostgresUserRepository) Save(ctx context.Context, u *domain.User) error {
+func (r *PostgresUserRepository) Save(ctx context.Context, u *model.User) error {
 	const sql = `
 INSERT INTO users (id, telegram_id, username, registered_at, last_active_at)
 VALUES ($1, $2, $3, $4, $5)
@@ -45,7 +49,7 @@ ON CONFLICT (telegram_id) DO UPDATE
 }
 
 // FindByTelegramID looks up a user by their Telegram ID.
-func (r *PostgresUserRepository) FindByTelegramID(ctx context.Context, tgID int64) (*domain.User, error) {
+func (r *PostgresUserRepository) FindByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
 	const sql = `
 SELECT id, telegram_id, username, registered_at, last_active_at
   FROM users
@@ -67,13 +71,49 @@ SELECT id, telegram_id, username, registered_at, last_active_at
 		return nil, fmt.Errorf("postgres: querying user: %w", err)
 	}
 
-	return &domain.User{
+	return &model.User{
 		ID:           id,
 		TelegramID:   telegramID,
 		Username:     username,
 		RegisteredAt: registeredAt,
 		LastActiveAt: lastActiveAt,
 	}, nil
+}
+
+func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (*model.User, error) {
+	const sql = `
+SELECT id, telegram_id, username, registered_at, last_active_at
+  FROM users
+ WHERE id = $1;
+`
+	row := r.pool.QueryRow(ctx, sql, id)
+
+	var (
+		userID       string
+		telegramID   int64
+		username     *string
+		registeredAt time.Time
+		lastActive   *time.Time
+	)
+	if err := row.Scan(&userID, &telegramID, &username, &registeredAt, &lastActive); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, domain.ErrNotFound
+		}
+		return nil, fmt.Errorf("postgres: querying user by id: %w", err)
+	}
+	u := &model.User{
+		ID:           userID,
+		TelegramID:   telegramID,
+		Username:     "",
+		RegisteredAt: registeredAt,
+	}
+	if username != nil {
+		u.Username = *username
+	}
+	if lastActive != nil {
+		u.LastActiveAt = *lastActive
+	}
+	return u, nil
 }
 
 // CountUsers returns total users count.

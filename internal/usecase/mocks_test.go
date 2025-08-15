@@ -8,20 +8,21 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 )
 
 // memUserRepo is a small in-memory implementation used by unit tests.
 type memUserRepo struct {
 	mu      sync.RWMutex
-	store   map[int64]*domain.User // map by TelegramID
-	saveErr error                  // used by tests to simulate save failures
+	store   map[int64]*model.User // map by TelegramID
+	saveErr error                 // used by tests to simulate save failures
 }
 
 func newMemUserRepo() *memUserRepo {
-	return &memUserRepo{store: make(map[int64]*domain.User)}
+	return &memUserRepo{store: make(map[int64]*model.User)}
 }
 
-func (m *memUserRepo) FindByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
+func (m *memUserRepo) FindByTelegramID(ctx context.Context, telegramID int64) (*model.User, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	u, ok := m.store[telegramID]
@@ -32,7 +33,7 @@ func (m *memUserRepo) FindByTelegramID(ctx context.Context, telegramID int64) (*
 	return &cp, nil
 }
 
-func (m *memUserRepo) Save(ctx context.Context, user *domain.User) error {
+func (m *memUserRepo) Save(ctx context.Context, user *model.User) error {
 	if m.saveErr != nil {
 		return m.saveErr
 	}
@@ -41,6 +42,18 @@ func (m *memUserRepo) Save(ctx context.Context, user *domain.User) error {
 	cp := *user
 	m.store[user.TelegramID] = &cp
 	return nil
+}
+
+func (m *memUserRepo) FindByID(ctx context.Context, id string) (*model.User, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, u := range m.store {
+		if u.ID == id {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, domain.ErrNotFound
 }
 
 func (m *memUserRepo) CountUsers(ctx context.Context) (int, error) {
@@ -71,14 +84,14 @@ func (m *memUserRepo) CountInactiveUsers(ctx context.Context, inactiveSince time
 // memSubRepo provides in-memory subscriptions for tests, and satisfies SubscriptionRepository including stats methods.
 type memSubRepo struct {
 	mu   sync.RWMutex
-	subs map[string]*domain.UserSubscription // map userID -> subscription
+	subs map[string]*model.UserSubscription // map userID -> subscription
 }
 
 func newMemSubRepo() *memSubRepo {
-	return &memSubRepo{subs: make(map[string]*domain.UserSubscription)}
+	return &memSubRepo{subs: make(map[string]*model.UserSubscription)}
 }
 
-func (m *memSubRepo) Save(ctx context.Context, sub *domain.UserSubscription) error {
+func (m *memSubRepo) Save(ctx context.Context, sub *model.UserSubscription) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *sub
@@ -86,7 +99,7 @@ func (m *memSubRepo) Save(ctx context.Context, sub *domain.UserSubscription) err
 	return nil
 }
 
-func (m *memSubRepo) FindActiveByUser(ctx context.Context, userID string) (*domain.UserSubscription, error) {
+func (m *memSubRepo) FindActiveByUser(ctx context.Context, userID string) (*model.UserSubscription, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	s, ok := m.subs[userID]
@@ -97,10 +110,10 @@ func (m *memSubRepo) FindActiveByUser(ctx context.Context, userID string) (*doma
 	return &cp, nil
 }
 
-func (m *memSubRepo) FindExpiring(ctx context.Context, withinDays int) ([]*domain.UserSubscription, error) {
+func (m *memSubRepo) FindExpiring(ctx context.Context, withinDays int) ([]*model.UserSubscription, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var out []*domain.UserSubscription
+	var out []*model.UserSubscription
 	cut := time.Now().Add(time.Duration(withinDays) * 24 * time.Hour)
 	for _, s := range m.subs {
 		if s.Active && s.ExpiresAt.Before(cut) {
@@ -140,14 +153,14 @@ func (m *memSubRepo) TotalRemainingCredits(ctx context.Context) (int, error) {
 // memPlanRepo minimal mock used by tests
 type memPlanRepo struct {
 	mu    sync.RWMutex
-	plans map[string]*domain.SubscriptionPlan
+	plans map[string]*model.SubscriptionPlan
 }
 
 func newMemPlanRepo() *memPlanRepo {
-	return &memPlanRepo{plans: make(map[string]*domain.SubscriptionPlan)}
+	return &memPlanRepo{plans: make(map[string]*model.SubscriptionPlan)}
 }
 
-func (m *memPlanRepo) Save(ctx context.Context, p *domain.SubscriptionPlan) error {
+func (m *memPlanRepo) Save(ctx context.Context, p *model.SubscriptionPlan) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	cp := *p
@@ -158,7 +171,7 @@ func (m *memPlanRepo) Save(ctx context.Context, p *domain.SubscriptionPlan) erro
 	return nil
 }
 
-func (m *memPlanRepo) FindByID(ctx context.Context, id string) (*domain.SubscriptionPlan, error) {
+func (m *memPlanRepo) FindByID(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	p, ok := m.plans[id]
@@ -169,10 +182,10 @@ func (m *memPlanRepo) FindByID(ctx context.Context, id string) (*domain.Subscrip
 	return &cp, nil
 }
 
-func (m *memPlanRepo) ListAll(ctx context.Context) ([]*domain.SubscriptionPlan, error) {
+func (m *memPlanRepo) ListAll(ctx context.Context) ([]*model.SubscriptionPlan, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]*domain.SubscriptionPlan, 0, len(m.plans))
+	out := make([]*model.SubscriptionPlan, 0, len(m.plans))
 	for _, p := range m.plans {
 		cp := *p
 		out = append(out, &cp)

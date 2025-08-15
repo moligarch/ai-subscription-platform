@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"telegram-ai-subscription/internal/domain"
-	"telegram-ai-subscription/internal/domain/repository"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 
 	"github.com/google/uuid"
 )
@@ -25,7 +25,7 @@ func NewPlanUseCase(repo repository.SubscriptionPlanRepository) *PlanUseCase {
 
 // Create validates and saves a new subscription plan.
 // It returns an error if a plan with the same name already exists.
-func (uc *PlanUseCase) Create(ctx context.Context, plan *domain.SubscriptionPlan) error {
+func (uc *PlanUseCase) Create(ctx context.Context, plan *model.SubscriptionPlan) error {
 	if plan == nil {
 		return fmt.Errorf("plan is nil")
 	}
@@ -62,11 +62,11 @@ func (uc *PlanUseCase) Create(ctx context.Context, plan *domain.SubscriptionPlan
 }
 
 // Get returns a plan by id.
-func (uc *PlanUseCase) Get(ctx context.Context, id string) (*domain.SubscriptionPlan, error) {
+func (uc *PlanUseCase) Get(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
 	return uc.repo.FindByID(ctx, id)
 }
 
 // List returns all plans.
-func (uc *PlanUseCase) List(ctx context.Context) ([]*domain.SubscriptionPlan, error) {
+func (uc *PlanUseCase) List(ctx context.Context) ([]*model.SubscriptionPlan, error) {
 	return uc.repo.ListAll(ctx)
 }

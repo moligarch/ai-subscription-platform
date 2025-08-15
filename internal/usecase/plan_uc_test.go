@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 
 	"github.com/google/uuid"
 )
@@ -25,7 +26,7 @@ func TestPlanUseCase_CreateAndGet(t *testing.T) {
 		credits      = 10
 	)
 
-	plan, err := domain.NewSubscriptionPlan(id, name, durationDays, credits)
+	plan, err := model.NewSubscriptionPlan(id, name, durationDays, credits)
 	if err != nil {
 		t.Fatalf("Failed to create new subscription plan: %s", err.Error())
 	}
@@ -63,7 +64,7 @@ func TestPlanUseCase_DuplicateName(t *testing.T) {
 	repo := newMemPlanRepo()
 	uc := NewPlanUseCase(repo)
 
-	p1 := &domain.SubscriptionPlan{
+	p1 := &model.SubscriptionPlan{
 		ID:           uuid.NewString(),
 		Name:         "pro",
 		DurationDays: 30,
@@ -75,7 +76,7 @@ func TestPlanUseCase_DuplicateName(t *testing.T) {
 	}
 
 	// attempt to create another plan with same name
-	p2 := &domain.SubscriptionPlan{
+	p2 := &model.SubscriptionPlan{
 		ID:           "", // let assign
 		Name:         "pro",
 		DurationDays: 15,
@@ -95,7 +96,7 @@ func TestPlanUseCase_ListAll(t *testing.T) {
 	repo := newMemPlanRepo()
 	uc := NewPlanUseCase(repo)
 
-	plans := []*domain.SubscriptionPlan{
+	plans := []*model.SubscriptionPlan{
 		{ID: uuid.NewString(), Name: "p-a", DurationDays: 5, Credits: 1, CreatedAt: time.Now()},
 		{ID: uuid.NewString(), Name: "p-b", DurationDays: 10, Credits: 2, CreatedAt: time.Now()},
 	}

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 )
 
 func TestSubscribeCreatesNewSubscription(t *testing.T) {
@@ -13,7 +14,7 @@ func TestSubscribeCreatesNewSubscription(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{
+	plan := &model.SubscriptionPlan{
 		ID:           "plan-1",
 		Name:         "Basic",
 		DurationDays: 7,
@@ -54,7 +55,7 @@ func TestSubscribeExtendsExisting(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{
+	plan := &model.SubscriptionPlan{
 		ID:           "plan-x",
 		Name:         "ExtendPlan",
 		DurationDays: 3,
@@ -65,7 +66,7 @@ func TestSubscribeExtendsExisting(t *testing.T) {
 
 	// create an existing subscription with 1 day left
 	now := time.Now()
-	existing := &domain.UserSubscription{
+	existing := &model.UserSubscription{
 		ID:               "sub-1",
 		UserID:           "u1",
 		PlanID:           plan.ID,
@@ -106,7 +107,7 @@ func TestDeductCreditSuccess(t *testing.T) {
 		credits      = 5
 	)
 
-	plan := &domain.SubscriptionPlan{ID: id, Name: name, DurationDays: durationDays, Credits: credits, CreatedAt: time.Now()}
+	plan := &model.SubscriptionPlan{ID: id, Name: name, DurationDays: durationDays, Credits: credits, CreatedAt: time.Now()}
 	_ = planRepo.Save(ctx, plan)
 
 	uc := NewSubscriptionUseCase(planRepo, subRepo)
@@ -132,11 +133,11 @@ func TestDeductCreditExpired(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{ID: "p-exp", Name: "P", DurationDays: 1, Credits: 1, CreatedAt: time.Now()}
+	plan := &model.SubscriptionPlan{ID: "p-exp", Name: "P", DurationDays: 1, Credits: 1, CreatedAt: time.Now()}
 	_ = planRepo.Save(ctx, plan)
 
 	now := time.Now()
-	expired := &domain.UserSubscription{
+	expired := &model.UserSubscription{
 		ID:               "sub-exp",
 		UserID:           "user-exp",
 		PlanID:           plan.ID,
@@ -163,11 +164,11 @@ func TestDeductNoCredits(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{ID: "p-empty", Name: "P", DurationDays: 7, Credits: 0, CreatedAt: time.Now()}
+	plan := &model.SubscriptionPlan{ID: "p-empty", Name: "P", DurationDays: 7, Credits: 0, CreatedAt: time.Now()}
 	_ = planRepo.Save(ctx, plan)
 
 	now := time.Now()
-	sub := &domain.UserSubscription{
+	sub := &model.UserSubscription{
 		ID:               "sub-empty",
 		UserID:           "user-empty",
 		PlanID:           plan.ID,
@@ -209,11 +210,11 @@ func TestDeductCreditInactiveSubscription(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{ID: "p-inactive", Name: "P", DurationDays: 7, Credits: 5, CreatedAt: time.Now()}
+	plan := &model.SubscriptionPlan{ID: "p-inactive", Name: "P", DurationDays: 7, Credits: 5, CreatedAt: time.Now()}
 	_ = planRepo.Save(ctx, plan)
 
 	now := time.Now()
-	sub := &domain.UserSubscription{
+	sub := &model.UserSubscription{
 		ID:               "sub-inactive",
 		UserID:           "user-inactive",
 		PlanID:           plan.ID,
@@ -240,11 +241,11 @@ func TestSubscribeExtendsExpired(t *testing.T) {
 	planRepo := newMemPlanRepo()
 	subRepo := newMemSubRepo()
 
-	plan := &domain.SubscriptionPlan{ID: "plan-exp", Name: "P", DurationDays: 5, Credits: 3, CreatedAt: time.Now()}
+	plan := &model.SubscriptionPlan{ID: "plan-exp", Name: "P", DurationDays: 5, Credits: 3, CreatedAt: time.Now()}
 	_ = planRepo.Save(ctx, plan)
 
 	now := time.Now()
-	sub := &domain.UserSubscription{
+	sub := &model.UserSubscription{
 		ID:               "sub-expired",
 		UserID:           "user-expired",
 		PlanID:           plan.ID,
