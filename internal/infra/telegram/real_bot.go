@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +35,7 @@ type RealTelegramBotAdapter struct {
 }
 
 // NewRealTelegramBotAdapter creates a new bot adapter.
-// facade is required for admin /stats command. updateWorkers controls concurrency.
+// facade is required for commands. updateWorkers controls concurrency.
 func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, facade *application.BotFacade, updateWorkers int) (*RealTelegramBotAdapter, error) {
 	if cfg == nil {
 		return nil, errors.New("bot config is nil")
@@ -206,10 +207,31 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 	cmd := strings.TrimSpace(text)
 	switch {
 	case cmd == "/start":
-		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Welcome to the subscription bot! Use /help to see commands.")
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Bot is not fully initialized.")
+		}
+		welcomeText, err := r.facade.HandleStart(ctx, user.TelegramID, user.Username)
+		if err != nil {
+			log.Printf("[telegram] failed to handle /start for user %d: %v", user.TelegramID, err)
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to start. Please try again later.")
+		}
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, welcomeText)
 	case cmd == "/help":
-		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Available commands:\n/start\n/help\n/stats (admin only)\n/plans\n/subscribe <plan_id>\n/myplan")
+		helpText := "Available commands:\n" +
+			"/start - Start the bot and register your account.\n" +
+			"/plans - List available subscription plans.\n" +
+			"/subscribe <plan_id> - Subscribe to a plan (demo mode: immediate subscription).\n" +
+			"/myplan - Show your current subscription plan.\n" +
+			"/balance - Show your current credit balance.\n" +
+			"/help - Show this help message."
+		if r.isAdmin(user.TelegramID) {
+			helpText += "\n\nAdmin commands:\n" +
+				"/plans create <name>;<duration_days>;<credits> - Create a new subscription plan.\n" +
+				"/stats - Show bot statistics."
+		}
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, helpText)
 	case cmd == "/stats":
+		// Admin command to get stats
 		if !r.isAdmin(user.TelegramID) {
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to use this command.")
 		}
@@ -222,8 +244,112 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to get stats. Please try again later.")
 		}
 		return r.SendMessageWithTelegramID(ctx, user.TelegramID, statsText)
+	case strings.HasPrefix(cmd, "/plans"):
+		parts := strings.SplitN(cmd, " ", 3)
+		// just "/plans" -> list plans
+		if len(parts) == 1 {
+			if r.facade == nil {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plans feature not available.")
+			}
+			resp, err := r.facade.HandlePlans(ctx)
+			if err != nil {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to list plans: "+err.Error())
+			}
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
+		}
+
+		// subcommands e.g. "/plans create ..." (admin required)
+		sub := strings.ToLower(strings.TrimSpace(parts[1]))
+		if sub == "create" {
+			if !r.isAdmin(user.TelegramID) {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to create plans.")
+			}
+			if r.facade == nil {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plan creation feature not available.")
+			}
+			// Expect args like: name;durationDays;credits
+			if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans create <name>;<duration_days>;<credits>\nExample: /plans create Pro;30;100")
+			}
+			args := parts[2]
+			fields := strings.SplitN(args, ";", 3)
+			if len(fields) != 3 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans create <name>;<duration_days>;<credits>\nExample: /plans create Pro;30;100")
+			}
+			name := strings.TrimSpace(fields[0])
+			durS := strings.TrimSpace(fields[1])
+			credS := strings.TrimSpace(fields[2])
+
+			dur, err := strconv.Atoi(durS)
+			if err != nil || dur <= 0 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Invalid duration. It must be a positive integer (days).")
+			}
+			credits, err := strconv.Atoi(credS)
+			if err != nil || credits < 0 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Invalid credits. It must be a non-negative integer.")
+			}
+
+			resp, err := r.facade.HandleCreatePlan(ctx, name, dur, credits)
+			if err != nil {
+				log.Printf("[telegram] create plan failed: %v", err)
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to create plan: "+err.Error())
+			}
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
+		}
+
+		// unknown /plans subcommand
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Unknown /plans subcommand. Use /plans to list or /plans create <name>;<days>;<credits> (admin).")
+	case strings.HasPrefix(cmd, "/subscribe"):
+		// Handle subscription command
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Subscription feature not available.")
+		}
+		parts := strings.SplitN(cmd, " ", 2)
+		if len(parts) < 2 {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /subscribe <plan_id>")
+		}
+		planID := strings.TrimSpace(parts[1])
+		subscribeText, err := r.facade.HandleSubscribe(ctx, user.TelegramID, user.Username, planID)
+		if err != nil {
+			log.Printf("[telegram] failed to handle /subscribe for user %d: %v", user.TelegramID, err)
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to subscribe. Please check the plan ID and try again.")
+		}
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, subscribeText)
+	case cmd == "/myplan":
+		// Show user's current plan
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "My plan feature not available.")
+		}
+		planText, err := r.facade.HandleMyPlan(ctx, user.TelegramID)
+		if err != nil {
+			log.Printf("[telegram] failed to get my plan for user %d: %v", user.TelegramID, err)
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to get your plan. Please try again later.")
+		}
+		if planText == "" {
+			planText = "You have no active subscription."
+		}
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, planText)
+	case cmd == "/balance":
+		// Show user's balance (if implemented)
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Balance feature not available.")
+		}
+		balanceText, err := r.facade.HandleBalance(ctx, user.TelegramID)
+		if err != nil {
+			log.Printf("[telegram] failed to get balance for user %d: %v", user.TelegramID, err)
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to get your balance. Please try again later.")
+		}
+		if balanceText == "" {
+			balanceText = "You have no balance information available."
+		}
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, balanceText)
 	default:
-		// For unimplemented commands, show help
+		// Handle other csommands (if any)
+		if r.facade == nil {
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Command not available.")
+		}
+		// You can add more command handlers here as needed
+		log.Printf("[telegram] unhandled command: %s for user %d", cmd, user.TelegramID)
 		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Unknown command. Send /help for the list of commands.")
 	}
 }

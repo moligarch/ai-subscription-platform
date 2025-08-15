@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
+
+	"github.com/google/uuid"
 )
 
 // BotFacade composes usecases into high-level bot commands.
@@ -173,4 +176,35 @@ func (b *BotFacade) HandleStats(ctx context.Context) (string, error) {
 	sb.WriteString(fmt.Sprintf("  - This Year: %s\n\n", formatMoney(year)))
 	sb.WriteString(fmt.Sprintf("🎫 Total Active Credits: %d\n", totalCredits))
 	return sb.String(), nil
+}
+
+// HandleCreatePlan creates a new subscription plan (admin only - checked by adapter).
+// name: plan name, durationDays: integer >0, credits: integer >=0
+func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationDays, credits int) (string, error) {
+	if b.PlanUC == nil {
+		return "", fmt.Errorf("plan usecase not available")
+	}
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("plan name is required")
+	}
+	if durationDays <= 0 {
+		return "", fmt.Errorf("durationDays must be > 0")
+	}
+	if credits < 0 {
+		return "", fmt.Errorf("credits must be >= 0")
+	}
+
+	p := &model.SubscriptionPlan{
+		ID:           uuid.NewString(),
+		Name:         strings.TrimSpace(name),
+		DurationDays: durationDays,
+		Credits:      credits,
+		CreatedAt:    time.Now(),
+	}
+
+	if err := b.PlanUC.Create(ctx, p); err != nil {
+		return "", fmt.Errorf("create plan: %w", err)
+	}
+
+	return fmt.Sprintf("Plan created: %s (id: %s) — %d days, %d credits", p.Name, p.ID, p.DurationDays, p.Credits), nil
 }
