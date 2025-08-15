@@ -33,6 +33,18 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   created_at         TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS payments (
+  id         UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id    UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  amount     DOUBLE PRECISION NOT NULL,          -- amount in Toman
+  method     TEXT        NOT NULL,               -- e.g. "mellat", "zarinpal", or a planID alias in demo mode
+  status     TEXT        NOT NULL,               -- store your domain.PaymentStatus as TEXT
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- helpful index for period totals
+CREATE INDEX IF NOT EXISTS idx_payments_created_at ON payments (created_at);
+
 -- 5) Partial unique index: one active subscription per user+plan
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_plan_active
   ON user_subscriptions(user_id, plan_id)
