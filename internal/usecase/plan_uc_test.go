@@ -18,13 +18,16 @@ func TestPlanUseCase_CreateAndGet(t *testing.T) {
 	ctx := context.Background()
 	repo := newMemPlanRepo()
 	uc := NewPlanUseCase(repo)
+	var (
+		id           = uuid.NewString()
+		name         = "basic"
+		durationDays = 7
+		credits      = 10
+	)
 
-	plan := &domain.SubscriptionPlan{
-		ID:           "", // let repo assign
-		Name:         "basic",
-		DurationDays: 7,
-		Credits:      10,
-		CreatedAt:    time.Now(),
+	plan, err := domain.NewSubscriptionPlan(id, name, durationDays, credits)
+	if err != nil {
+		t.Fatalf("Failed to create new subscription plan: %s", err.Error())
 	}
 
 	// create
