@@ -18,6 +18,7 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/redis"
 )
 
 // RealTelegramBotAdapter implements adapter.TelegramBotAdapter using tgbotapi with concurrent polling.
@@ -27,16 +28,15 @@ type RealTelegramBotAdapter struct {
 	userRepo    repository.UserRepository
 	facade      *application.BotFacade
 	adminIDsMap map[int64]struct{}
+	rateLimiter *redis.RateLimiter
 
-	// updateWorkers is how many goroutines will concurrently process updates.
 	updateWorkers int
-	// cancelPolling cancels polling when called
 	cancelPolling context.CancelFunc
 }
 
 // NewRealTelegramBotAdapter creates a new bot adapter.
 // facade is required for commands. updateWorkers controls concurrency.
-func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, facade *application.BotFacade, updateWorkers int) (*RealTelegramBotAdapter, error) {
+func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, facade *application.BotFacade, rateLimiter *redis.RateLimiter, updateWorkers int) (*RealTelegramBotAdapter, error) {
 	if cfg == nil {
 		return nil, errors.New("bot config is nil")
 	}
@@ -66,6 +66,7 @@ func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRe
 		userRepo:      userRepo,
 		facade:        facade,
 		adminIDsMap:   adminMap,
+		rateLimiter:   rateLimiter,
 		updateWorkers: updateWorkers,
 	}, nil
 }
@@ -205,6 +206,17 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 
 func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.User, text string) error {
 	cmd := strings.TrimSpace(text)
+	// Rate limiting: allow 5 requests per minute per user per command
+	commandName := strings.SplitN(cmd, " ", 1)[0]
+	key := redis.UserCommandKey(user.TelegramID, commandName)
+	allowed, err := r.rateLimiter.Allow(ctx, key, 5, time.Minute)
+	if err != nil {
+		log.Printf("Rate limit error: %v", err)
+		// Continue without rate limiting on error
+	} else if !allowed {
+		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Rate limit exceeded. Please try again later.")
+	}
+
 	switch {
 	case cmd == "/start":
 		if r.facade == nil {
@@ -246,7 +258,7 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 		return r.SendMessageWithTelegramID(ctx, user.TelegramID, statsText)
 	case strings.HasPrefix(cmd, "/plans"):
 		parts := strings.SplitN(cmd, " ", 3)
-		// just "/plans" -> list plans
+		// simple "/plans" -> list plans
 		if len(parts) == 1 {
 			if r.facade == nil {
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plans feature not available.")
@@ -258,16 +270,17 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
 		}
 
-		// subcommands e.g. "/plans create ..." (admin required)
 		sub := strings.ToLower(strings.TrimSpace(parts[1]))
-		if sub == "create" {
+
+		switch sub {
+		case "create":
+			// admin-only create
 			if !r.isAdmin(user.TelegramID) {
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to create plans.")
 			}
 			if r.facade == nil {
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plan creation feature not available.")
 			}
-			// Expect args like: name;durationDays;credits
 			if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans create <name>;<duration_days>;<credits>\nExample: /plans create Pro;30;100")
 			}
@@ -288,17 +301,72 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 			if err != nil || credits < 0 {
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Invalid credits. It must be a non-negative integer.")
 			}
-
 			resp, err := r.facade.HandleCreatePlan(ctx, name, dur, credits)
 			if err != nil {
 				log.Printf("[telegram] create plan failed: %v", err)
 				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to create plan: "+err.Error())
 			}
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
-		}
 
-		// unknown /plans subcommand
-		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Unknown /plans subcommand. Use /plans to list or /plans create <name>;<days>;<credits> (admin).")
+		case "update":
+			// admin-only update
+			if !r.isAdmin(user.TelegramID) {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to update plans.")
+			}
+			if r.facade == nil {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plan update feature not available.")
+			}
+			// Expect args: planID;name;duration;credits
+			if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans update <plan_id>;<name>;<duration_days>;<credits>\nExample: /plans update <id>;Pro;30;100")
+			}
+			fields := strings.SplitN(parts[2], ";", 4)
+			if len(fields) != 4 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans update <plan_id>;<name>;<duration_days>;<credits>\nExample: /plans update <id>;Pro;30;100")
+			}
+			planID := strings.TrimSpace(fields[0])
+			name := strings.TrimSpace(fields[1])
+			durS := strings.TrimSpace(fields[2])
+			credS := strings.TrimSpace(fields[3])
+
+			dur, err := strconv.Atoi(durS)
+			if err != nil || dur <= 0 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Invalid duration. It must be a positive integer (days).")
+			}
+			credits, err := strconv.Atoi(credS)
+			if err != nil || credits < 0 {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Invalid credits. It must be a non-negative integer.")
+			}
+
+			resp, err := r.facade.HandleUpdatePlan(ctx, planID, name, dur, credits)
+			if err != nil {
+				log.Printf("[telegram] update plan failed: %v", err)
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to update plan: "+err.Error())
+			}
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
+
+		case "delete":
+			// admin-only delete
+			if !r.isAdmin(user.TelegramID) {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "You are not authorized to delete plans.")
+			}
+			if r.facade == nil {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Plan delete feature not available.")
+			}
+			if len(parts) < 3 || strings.TrimSpace(parts[2]) == "" {
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Usage: /plans delete <plan_id>\nExample: /plans delete bebc87da-...")
+			}
+			planID := strings.TrimSpace(parts[2])
+			resp, err := r.facade.HandleDeletePlan(ctx, planID)
+			if err != nil {
+				log.Printf("[telegram] delete plan failed: %v", err)
+				return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Failed to delete plan: "+err.Error())
+			}
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, resp)
+
+		default:
+			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Unknown /plans subcommand. Use /plans to list or /plans create/update/delete ...")
+		}
 	case strings.HasPrefix(cmd, "/subscribe"):
 		// Handle subscription command
 		if r.facade == nil {
@@ -344,11 +412,10 @@ func (r *RealTelegramBotAdapter) handleCommand(ctx context.Context, user *model.
 		}
 		return r.SendMessageWithTelegramID(ctx, user.TelegramID, balanceText)
 	default:
-		// Handle other csommands (if any)
+		// Handle other commands (if any)
 		if r.facade == nil {
 			return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Command not available.")
 		}
-		// You can add more command handlers here as needed
 		log.Printf("[telegram] unhandled command: %s for user %d", cmd, user.TelegramID)
 		return r.SendMessageWithTelegramID(ctx, user.TelegramID, "Unknown command. Send /help for the list of commands.")
 	}
