@@ -57,3 +57,13 @@ func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username 
 func (u *UserUseCase) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
 	return u.userRepo.FindByTelegramID(ctx, tgID)
 }
+
+// CountUsers returns total number of users (delegates to repository)
+func (u *UserUseCase) CountUsers(ctx context.Context) (int, error) {
+	return u.userRepo.CountUsers(ctx)
+}
+
+// CountInactiveUsers returns count of users inactive since the provided time
+func (u *UserUseCase) CountInactiveUsers(ctx context.Context, since time.Time) (int, error) {
+	return u.userRepo.CountInactiveUsers(ctx, since)
+}

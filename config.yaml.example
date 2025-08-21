@@ -6,6 +6,10 @@ bot:
   admin_ids:
     - 12345689
 
+log:
+  level: "info" # debug, info, warn, error
+
+
 admin:
   port: 9090
 
@@ -13,7 +17,7 @@ database:
   url: "postgres://postgres:postgres@127.0.0.1:5432/subscription_test?sslmode=disable"
 
 redis:
-  url: "redis://localhost:6379"
+  url: "localhost:6379"
   password: ""
   db: 1
   ttl: "1h"
@@ -25,8 +29,11 @@ ai:
   default_model: "gpt-4"
 
 payment:
-  mellat_terminal: "TERMINAL123"
-  zarinpal_key: "ZP-KEY-XYZ"
+  zarinpal:
+    merchant_id: "YOUR-MERCHANT-ID"
+    callback_url: "https://your-domain.tld/payment/callback/zp"
+    sandbox: true
+
 
 scheduler:
   expiry_check_cron: "0 0 * * *"

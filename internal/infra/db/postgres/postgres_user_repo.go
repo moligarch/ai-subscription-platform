@@ -13,6 +13,7 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
+// Ensure interface compliance
 var _ repository.UserRepository = (*PostgresUserRepository)(nil)
 
 // PostgresUserRepository is a Postgres adapter for domain.UserRepository.
@@ -26,7 +27,6 @@ func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
 }
 
 // Save inserts or updates a user.
-// On conflict of telegram_id, updates username and registered_at.
 func (r *PostgresUserRepository) Save(ctx context.Context, u *model.User) error {
 	const sql = `
 INSERT INTO users (id, telegram_id, username, registered_at, last_active_at)

@@ -6,15 +6,16 @@ import (
 	"time"
 )
 
-// PaymentRepository handles payments persistence/queries.
-// Note: amounts use float64 in Toman (matches domain.Payment.Amount).
 type PaymentRepository interface {
-	// Save persists a payment (insert or update).
 	Save(ctx context.Context, p *model.Payment) error
+	Update(ctx context.Context, p *model.Payment) error
+	Get(ctx context.Context, id string) (*model.Payment, error)
+	GetByAuthority(ctx context.Context, authority string) (*model.Payment, error)
+	TotalPaymentsSince(ctx context.Context, since time.Time) (int64, error)
+	TotalPaymentsAll(ctx context.Context) (int64, error)
+}
 
-	// FindByID returns a payment by id or domain.ErrNotFound.
-	FindByID(ctx context.Context, id string) (*model.Payment, error)
-
-	// TotalPaymentsInPeriod returns total paid amount (in Toman) between since (inclusive) and till (exclusive).
-	TotalPaymentsInPeriod(ctx context.Context, since, till time.Time) (float64, error)
+type PurchaseRepository interface {
+	Save(ctx context.Context, pu *model.Purchase) error
+	ListByUser(ctx context.Context, userID string) ([]*model.Purchase, error)
 }

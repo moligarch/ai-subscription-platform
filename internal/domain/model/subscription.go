@@ -6,16 +6,28 @@ import (
 	"telegram-ai-subscription/internal/domain"
 )
 
+type SubscriptionStatus string
+
+const (
+	SubscriptionStatusNone      SubscriptionStatus = "none"
+	SubscriptionStatusReserved  SubscriptionStatus = "reserved"
+	SubscriptionStatusActive    SubscriptionStatus = "active"
+	SubscriptionStatusFinished  SubscriptionStatus = "finished"
+	SubscriptionStatusCancelled SubscriptionStatus = "cancelled"
+)
+
 // UserSubscription represents a user’s individual subscription instance.
+
 type UserSubscription struct {
-	ID               string
-	UserID           string
-	PlanID           string
-	StartAt          time.Time
-	ExpiresAt        time.Time
-	RemainingCredits int
-	Active           bool
+	ID               string // UUID
+	UserID           string // UUID of user
+	PlanID           string // UUID of plan
 	CreatedAt        time.Time
+	ScheduledStartAt *time.Time // nil if should start immediately
+	StartAt          *time.Time // nil until active
+	ExpiresAt        *time.Time // nil until scheduled/started
+	RemainingCredits int
+	Status           SubscriptionStatus
 }
 
 // NewUserSubscription creates a new subscription for a user.
@@ -24,21 +36,22 @@ func NewUserSubscription(id, userID string, plan *SubscriptionPlan) (*UserSubscr
 		return nil, domain.ErrInvalidArgument
 	}
 	now := time.Now()
+	expire := now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
 	return &UserSubscription{
 		ID:               id,
 		UserID:           userID,
 		PlanID:           plan.ID,
-		StartAt:          now,
-		ExpiresAt:        now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour),
+		StartAt:          &now,
+		ExpiresAt:        &expire,
 		RemainingCredits: plan.Credits,
-		Active:           true,
+		Status:           SubscriptionStatusActive,
 		CreatedAt:        now,
 	}, nil
 }
 
 // UseCredit deducts one credit, returns updated copy or error.
 func (us *UserSubscription) UseCredit() (*UserSubscription, error) {
-	if !us.Active || time.Now().After(us.ExpiresAt) {
+	if us.Status != SubscriptionStatusActive || time.Now().After(*us.ExpiresAt) {
 		return nil, domain.ErrExpiredSubscription
 	}
 	if us.RemainingCredits <= 0 {
@@ -56,11 +69,12 @@ func (us *UserSubscription) Extend(plan *SubscriptionPlan) (*UserSubscription, e
 	}
 	copy := *us
 	start := us.ExpiresAt
-	if time.Now().After(us.ExpiresAt) {
-		start = time.Now()
+	if time.Now().After(*us.ExpiresAt) {
+		*start = time.Now()
 	}
-	copy.ExpiresAt = start.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+	expire := start.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+	copy.ExpiresAt = &expire
 	copy.RemainingCredits += plan.Credits
-	copy.Active = true
+	copy.Status = SubscriptionStatusActive
 	return &copy, nil
 }

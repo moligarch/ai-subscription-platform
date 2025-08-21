@@ -11,4 +11,5 @@ var (
 	ErrExpiredSubscription = errors.New("subscription has expired")
 	ErrCodeAlreadyUsed     = errors.New("activation code already used")
 	ErrCodeNotFound        = errors.New("activation code not found")
+	ErrAlreadyHasReserved  = errors.New("user already has a reserved subscription")
 )

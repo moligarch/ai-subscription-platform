@@ -3,15 +3,19 @@ package postgres
 import (
 	"context"
 	"log"
-	"os"
+	"telegram-ai-subscription/internal/config"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
 // MustConnectPostgres returns a live *pgxpool.Pool or fatals.
-func MustConnectPostgres() *pgxpool.Pool {
-	dsn := os.Getenv("DATABASE_URL")
+func MustConnectPostgres(cfg *config.DatabaseConfig) *pgxpool.Pool {
+	if cfg == nil {
+		log.Fatal("Database configuration is required")
+	}
+
+	dsn := cfg.URL
 	if dsn == "" {
 		log.Fatal("DATABASE_URL is required")
 	}

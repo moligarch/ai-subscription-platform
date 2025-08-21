@@ -9,98 +9,102 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v4/pgxpool"
-
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
-	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/http"
+	"telegram-ai-subscription/internal/infra/payment"
+	"telegram-ai-subscription/internal/infra/redis"
 	"telegram-ai-subscription/internal/infra/telegram"
 	"telegram-ai-subscription/internal/usecase"
 )
 
 func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Load config
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		dir, oerr := os.Getwd()
-		if oerr != nil {
-			log.Println("Error:", oerr)
-			return
-		}
-		log.Println("Current Directory:", dir)
-		log.Fatalf("failed to load config: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Connect to Postgres
-	pool, err := pgxpool.Connect(context.Background(), cfg.Database.URL)
-	if err != nil {
-		log.Fatalf("db connect: %v", err)
-	}
-	// ensure pool closed at exit
+	// Create PostgreSQL pool
+	pool := postgres.MustConnectPostgres(&cfg.Database)
 	defer pool.Close()
 
-	// Repositories
-	userRepo := pg.NewPostgresUserRepository(pool)
-	if userRepo == nil {
-		log.Fatalf("failed to init user repo")
+	// Create Redis client
+	redisClient := redis.NewRedisClient(&cfg.Redis)
+	defer redisClient.Close()
+
+	// Ping Redis to check connection
+	ctx := context.Background()
+	if err := redisClient.Ping(ctx); err != nil {
+		log.Fatalf("Redis ping failed: %v", err)
 	}
 
-	planRepo := pg.NewPostgresPlanRepo(pool)
-	if planRepo == nil {
-		log.Fatalf("failed to init plan repo")
-	}
+	// Create rate limiter
+	rateLimiter := redis.NewRateLimiter(redisClient)
 
-	subRepo := pg.NewPostgresSubscriptionRepo(pool)
-	if subRepo == nil {
-		log.Fatalf("failed to init subscription repo")
-	}
+	// Initialize repositories
+	userRepo := postgres.NewPostgresUserRepository(pool)
+	planRepo := postgres.NewPostgresPlanRepo(pool)
+	subRepo := postgres.NewPostgresSubscriptionRepo(pool)
+	paymentRepo := postgres.NewPostgresPaymentRepo(pool)
+	purchaseRepo := postgres.NewPostgresPurchaseRepo(pool)
 
-	payRepo := pg.NewPostgresPaymentRepo(pool)
-	if payRepo == nil {
-		log.Fatalf("failed to init payment repo")
-	}
-
-	// Usecases
+	// Initialize use cases
 	userUC := usecase.NewUserUseCase(userRepo)
 	planUC := usecase.NewPlanUseCase(planRepo)
-	subUC := usecase.NewSubscriptionUseCase(planRepo, subRepo)
-	payUC := usecase.NewPaymentUseCase(payRepo, subUC)
-	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo)
+	subUC := usecase.NewSubscriptionUseCase(planRepo, subRepo, pool)
+	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, paymentRepo)
+	notifUC := usecase.NewNotificationUseCase(subRepo, nil) // bot adapter not set yet
 
-	// Notification usecase: pass subRepo, bot may be set later
-	notifUC := usecase.NewNotificationUseCase(subRepo, nil)
+	// Create payment gateway
+	zarinpalGateway := payment.NewZarinPalDirectGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.Sandbox)
 
-	// create facade (pass notifUC even though bot is not set yet)
-	botFacade := application.NewBotFacade(userUC, planUC, subUC, payUC, statsUC, notifUC)
+	// Create payment use case
+	paymentUC := usecase.NewPaymentUseCase(paymentRepo, purchaseRepo, *subUC, zarinpalGateway, cfg.Payment.ZarinPal.CallbackURL)
 
-	// pass facade to telegram adapter constructor
-	botAdapter, err := telegram.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, botFacade, 5)
+	// Create bot facade
+	botFacade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, statsUC, notifUC)
+
+	// Create Telegram bot adapter
+	botAdapter, err := telegram.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, botFacade, rateLimiter, 5)
 	if err != nil {
-		log.Fatalf("failed to init telegram bot adapter: %v", err)
+		log.Fatalf("Failed to create bot adapter: %v", err)
 	}
 
-	// Now that we have the real bot adapter, set it into the notification usecase so it can send messages
+	// Set the bot adapter for notifications
 	notifUC.SetBot(botAdapter)
 
-	// Start polling updates in background
+	// Create HTTP server for webhooks
+	httpServer := http.NewServer(cfg, *paymentUC, userRepo)
+
+	// Start components
 	go func() {
-		if err := botAdapter.StartPolling(ctx); err != nil {
-			log.Printf("telegram polling stopped with error: %v", err)
+		if err := httpServer.Start(); err != nil {
+			log.Printf("HTTP server error: %v", err)
 		}
 	}()
 
-	// Graceful shutdown handling
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// Start bot in polling mode
+	if cfg.Bot.Mode == "polling" {
+		go func() {
+			if err := botAdapter.StartPolling(ctx); err != nil {
+				log.Printf("Bot polling error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("Webhook mode not implemented yet")
+	}
 
-	<-sigCh
-	log.Println("Shutting down gracefully...")
-	// stop bot polling
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
+
+	// Shutdown gracefully
+	log.Printf("Shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	httpServer.Shutdown(shutdownCtx)
 	botAdapter.StopPolling()
-
-	// give components a moment to finish
-	time.Sleep(2 * time.Second)
 }
