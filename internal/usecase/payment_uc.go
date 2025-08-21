@@ -1,90 +1,174 @@
-// File: internal/usecase/payment_uc.go
 package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/payment"
 )
 
-// PaymentUseCase orchestrates payment flows.
 type PaymentUseCase struct {
-	payRepo repository.PaymentRepository
-	// gateway    domain.PaymentGateway
-	subUC *SubscriptionUseCase
+	payRepo      repository.PaymentRepository
+	purchaseRepo repository.PurchaseRepository
+	subUC        SubscriptionUseCase // to grant plan after verification
+	gateway      payment.PaymentGateway
+	callbackURL  string
+	provider     string // "zarinpal"
 }
 
-// NewPaymentUseCase constructs PaymentUseCase.
 func NewPaymentUseCase(
 	payRepo repository.PaymentRepository,
-	// gateway domain.PaymentGateway,
-	subUC *SubscriptionUseCase,
+	purchaseRepo repository.PurchaseRepository,
+	subUC SubscriptionUseCase,
+	gateway payment.PaymentGateway,
+	callbackURL string,
 ) *PaymentUseCase {
 	return &PaymentUseCase{
-		payRepo: payRepo,
-		// gateway: gateway,
-		subUC: subUC,
+		payRepo:      payRepo,
+		purchaseRepo: purchaseRepo,
+		subUC:        subUC,
+		gateway:      gateway,
+		callbackURL:  callbackURL,
+		provider:     "zarinpal",
 	}
 }
 
-// Initiate creates a Payment and returns the payment entity.
-func (p *PaymentUseCase) Initiate(ctx context.Context, userID, method string, amount float64) (*model.Payment, error) {
-	payID := model.NewUUID()
-	pay, err := model.NewPayment(payID, userID, method, amount)
+var (
+	ErrUnsupportedProvider = errors.New("unsupported payment provider")
+	ErrPaymentNotFound     = errors.New("payment not found")
+	ErrPaymentBadState     = errors.New("payment not in pending state")
+)
+
+func (uc *PaymentUseCase) Initiate(ctx context.Context, userID, planID string, amountIRR int64, description string, meta map[string]interface{}) (*model.Payment, string, error) {
+	if uc.provider != "zarinpal" {
+		return nil, "", ErrUnsupportedProvider
+	}
+
+	now := time.Now()
+	p := &model.Payment{
+		ID:          uuid.NewString(),
+		UserID:      userID,
+		PlanID:      planID,
+		Provider:    uc.provider,
+		Amount:      amountIRR,
+		Currency:    "IRR",
+		Status:      model.PaymentStatusInitiated,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Callback:    uc.callbackURL,
+		Description: description,
+		Meta:        meta,
+	}
+	if err := uc.payRepo.Save(ctx, p); err != nil {
+		return nil, "", err
+	}
+
+	authority, payURL, err := uc.gateway.Request(ctx, amountIRR, uc.callbackURL, description, meta)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	if err := p.payRepo.Save(ctx, pay); err != nil {
-		return nil, err
+	p.Authority = authority
+	p.Status = model.PaymentStatusPending
+	p.UpdatedAt = time.Now().UTC()
+	if err := uc.payRepo.Update(ctx, p); err != nil {
+		return nil, "", err
 	}
-	return pay, nil
+
+	// Return payURL so bot can show the link.
+	return p, payURL, nil
 }
 
-// Confirm handles the gateway callback, updates payment & subscription.
-func (p *PaymentUseCase) Confirm(ctx context.Context, payID string, success bool) (*model.Payment, error) {
-	existing, err := p.payRepo.FindByID(ctx, payID)
+// Confirm is invoked after the user returns from the gateway with Authority, or by admin webhook/command.
+func (uc *PaymentUseCase) Confirm(ctx context.Context, authority string, expectedAmount int64) (*model.Payment, error) {
+	p, err := uc.payRepo.GetByAuthority(ctx, authority)
+	if err != nil || p == nil {
+		return nil, ErrPaymentNotFound
+	}
+	if p.Status != model.PaymentStatusPending {
+		return nil, ErrPaymentBadState
+	}
+	// Verify on gateway
+	refID, ok, err := uc.gateway.Verify(ctx, expectedAmount, authority)
 	if err != nil {
 		return nil, err
 	}
-	var updated *model.Payment
-	if success {
-		updated = existing.MarkSuccess()
-		// upon success, subscribe user with chosen plan/amount
-		// here we assume Method stores plan ID or similar mapping
-		if _, err := p.subUC.Subscribe(ctx, existing.UserID, existing.Method); err != nil {
+	now := time.Now().UTC()
+	if !ok {
+		p.Status = model.PaymentStatusFailed
+		p.UpdatedAt = now
+		if err := uc.payRepo.Update(ctx, p); err != nil {
 			return nil, err
 		}
-	} else {
-		updated = existing.MarkFailed()
+		return p, nil
 	}
-	if err := p.payRepo.Save(ctx, updated); err != nil {
+
+	// Success: update payment
+	p.Status = model.PaymentStatusSucceeded
+	p.RefID = refID
+	p.PaidAt = &now
+	p.UpdatedAt = now
+	if err := uc.payRepo.Update(ctx, p); err != nil {
 		return nil, err
 	}
-	return updated, nil
+
+	// Grant subscription (active or reserved based on your existing logic)
+	sub, err := uc.subUC.Subscribe(ctx, p.UserID, p.PlanID)
+	if err != nil {
+		// If subscription failed, we do NOT roll back payment; but we log/return an error.
+		return nil, fmt.Errorf("payment ok but failed to grant plan: %w", err)
+	}
+
+	// Record purchase history
+	pu := &model.Purchase{
+		ID:             uuid.NewString(),
+		UserID:         p.UserID,
+		PlanID:         p.PlanID,
+		PaymentID:      p.ID,
+		SubscriptionID: sub.ID,
+		CreatedAt:      time.Now().UTC(),
+	}
+	if err := uc.purchaseRepo.Save(ctx, pu); err != nil {
+		// Not fatal for user flow, but we surface it so you can fix.
+		return p, fmt.Errorf("purchase history save failed: %w", err)
+	}
+
+	// Attach subscription to payment for convenience
+	p.SubscriptionID = &sub.ID
+	p.UpdatedAt = time.Now().UTC()
+	_ = uc.payRepo.Update(ctx, p) // best-effort; ignore error
+
+	return p, nil
 }
 
-// TotalPayments returns total payments for given time period ("week", "month", "year") in Toman.
-func (uc *PaymentUseCase) TotalPayments(ctx context.Context, period string) (float64, error) {
-	now := time.Now()
-	var since time.Time
-
+func (uc *PaymentUseCase) TotalPayments(ctx context.Context, period string) (int64, error) {
+	now := time.Now().UTC()
 	switch period {
 	case "week":
-		since = now.Add(-7 * 24 * time.Hour)
+		return uc.payRepo.TotalPaymentsSince(ctx, now.Add(-7*24*time.Hour))
 	case "month":
-		since = now.Add(-30 * 24 * time.Hour)
+		return uc.payRepo.TotalPaymentsSince(ctx, now.Add(-30*24*time.Hour))
 	case "year":
-		since = now.Add(-365 * 24 * time.Hour)
+		return uc.payRepo.TotalPaymentsSince(ctx, now.AddDate(-1, 0, 0))
+	case "all":
+		return uc.payRepo.TotalPaymentsAll(ctx)
 	default:
-		return 0, fmt.Errorf("unknown period %q", period)
+		return uc.payRepo.TotalPaymentsAll(ctx)
 	}
+}
 
-	sum, err := uc.payRepo.TotalPaymentsInPeriod(ctx, since, now.Add(time.Second))
+func (uc *PaymentUseCase) GetByAuthority(ctx context.Context, authority string) (*model.Payment, error) {
+	payment, err := uc.payRepo.GetByAuthority(ctx, authority)
 	if err != nil {
-		return 0, fmt.Errorf("total payments for %s: %w", period, err)
+		return nil, fmt.Errorf("failed to get payment by authority %s: %w", authority, err)
 	}
-	return sum, nil
+	if payment == nil {
+		return nil, ErrPaymentNotFound
+	}
+	return payment, nil
 }

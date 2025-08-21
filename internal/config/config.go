@@ -47,10 +47,15 @@ type AIConfig struct {
 	DefaultModel string `mapstructure:"default_model"`
 }
 
-// PaymentConfig holds payment gateway credentials.
+type ZarinPalConfig struct {
+	MerchantID   string `mapstructure:"merchant_id"`
+	CallbackURL  string `mapstructure:"callback_url"`
+	CallbackPort int    `mapstructure:"callback_port"`
+	Sandbox      bool   `mapstructure:"sandbox"`
+}
+
 type PaymentConfig struct {
-	MellatTerminal string `mapstructure:"mellat_terminal"`
-	ZarinpalKey    string `mapstructure:"zarinpal_key"`
+	ZarinPal ZarinPalConfig `mapstructure:"zarinpal"`
 }
 
 // SchedulerConfig holds cron schedules.
