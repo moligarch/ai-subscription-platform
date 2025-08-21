@@ -13,14 +13,15 @@ import (
 
 // UserSubscriptionDTO is a small, serializable subscription result used by workers and callers.
 type UserSubscriptionDTO struct {
-	ID               string
-	UserID           string
-	PlanID           string
-	StartAt          time.Time
-	ExpiresAt        time.Time
-	RemainingCredits int
-	Active           bool
+	ID               string // UUID
+	UserID           string // UUID of user
+	PlanID           string // UUID of plan
 	CreatedAt        time.Time
+	ScheduledStartAt *time.Time // nil if should start immediately
+	StartAt          *time.Time // nil until active
+	ExpiresAt        *time.Time // nil until scheduled/started
+	RemainingCredits int
+	Status           model.SubscriptionStatus
 }
 
 // SubscriptionExecutor provides an execution wrapper around SubscriptionUseCase.
@@ -49,24 +50,25 @@ func (e *SubscriptionExecutor) ExecuteSubscribe(ctx context.Context, userID, pla
 	}
 
 	now := time.Now()
+	expire := now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
 	var sub *model.UserSubscription
 	if err == domain.ErrNotFound {
 		sub = &model.UserSubscription{
 			ID:               uuid.NewString(),
 			UserID:           userID,
 			PlanID:           planID,
-			StartAt:          now,
-			ExpiresAt:        now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour),
+			StartAt:          &now,
+			ExpiresAt:        &expire,
 			RemainingCredits: plan.Credits,
-			Active:           true,
+			Status:           model.SubscriptionStatusActive,
 			CreatedAt:        now,
 		}
 	} else {
 		// extend
 		sub = existing
-		sub.ExpiresAt = sub.ExpiresAt.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+		*sub.ExpiresAt = sub.ExpiresAt.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
 		sub.RemainingCredits += plan.Credits
-		sub.Active = true
+		sub.Status = model.SubscriptionStatusActive
 	}
 
 	if err := e.subRepo.Save(ctx, sub); err != nil {
@@ -80,7 +82,7 @@ func (e *SubscriptionExecutor) ExecuteSubscribe(ctx context.Context, userID, pla
 		StartAt:          sub.StartAt,
 		ExpiresAt:        sub.ExpiresAt,
 		RemainingCredits: sub.RemainingCredits,
-		Active:           sub.Active,
+		Status:           sub.Status,
 		CreatedAt:        sub.CreatedAt,
 	}, nil
 }

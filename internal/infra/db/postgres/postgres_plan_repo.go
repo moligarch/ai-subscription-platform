@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-// Ensure interface compliance:
+// Ensure interface compliance
 var _ repository.SubscriptionPlanRepository = (*PostgresPlanRepo)(nil)
 
 type PostgresPlanRepo struct {
@@ -77,4 +77,30 @@ SELECT id, name, duration_days, credits, created_at
 		out = append(out, &p)
 	}
 	return out, nil
+}
+
+func (r *PostgresPlanRepo) Delete(ctx context.Context, id string) error {
+	// 1) check for active subscriptions
+	const countSQL = `
+SELECT COUNT(1) FROM user_subscriptions s
+WHERE s.plan_id = $1 AND s.is_active = true;
+`
+	var cnt int
+	if err := r.pool.QueryRow(ctx, countSQL, id).Scan(&cnt); err != nil {
+		return fmt.Errorf("postgres CountActiveByPlan: %w", err)
+	}
+	if cnt > 0 {
+		return fmt.Errorf("cannot delete plan %s: %d active subscriptions exist", id, cnt)
+	}
+
+	// 2) safe to delete
+	const delSQL = `DELETE FROM subscription_plans WHERE id = $1;`
+	ct, err := r.pool.Exec(ctx, delSQL, id)
+	if err != nil {
+		return fmt.Errorf("postgres Delete plan: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("plan %s not found", id)
+	}
+	return nil
 }

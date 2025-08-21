@@ -51,26 +51,25 @@ func (uc *StatsUseCase) GetCounts(ctx context.Context, inactiveWindow time.Durat
 }
 
 // GetPaymentsForPeriods returns the payments (Toman) for last 7/30/365 days.
-func (uc *StatsUseCase) GetPaymentsForPeriods(ctx context.Context) (week, month, year float64, err error) {
+func (uc *StatsUseCase) GetPaymentsForPeriods(ctx context.Context) (week, month, year int64, err error) {
 	now := time.Now()
-	epsilon := time.Second
 
 	weekSince := now.Add(-7 * 24 * time.Hour)
-	week, err = uc.payRepo.TotalPaymentsInPeriod(ctx, weekSince, now.Add(epsilon))
+	week, err = uc.payRepo.TotalPaymentsSince(ctx, weekSince)
 	if err != nil {
 		err = fmt.Errorf("week payments: %w", err)
 		return
 	}
 
 	monthSince := now.Add(-30 * 24 * time.Hour)
-	month, err = uc.payRepo.TotalPaymentsInPeriod(ctx, monthSince, now.Add(epsilon))
+	month, err = uc.payRepo.TotalPaymentsSince(ctx, monthSince)
 	if err != nil {
 		err = fmt.Errorf("month payments: %w", err)
 		return
 	}
 
 	yearSince := now.Add(-365 * 24 * time.Hour)
-	year, err = uc.payRepo.TotalPaymentsInPeriod(ctx, yearSince, now.Add(epsilon))
+	year, err = uc.payRepo.TotalPaymentsSince(ctx, yearSince)
 	if err != nil {
 		err = fmt.Errorf("year payments: %w", err)
 		return

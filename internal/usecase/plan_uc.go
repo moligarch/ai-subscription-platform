@@ -70,3 +70,23 @@ func (uc *PlanUseCase) Get(ctx context.Context, id string) (*model.SubscriptionP
 func (uc *PlanUseCase) List(ctx context.Context) ([]*model.SubscriptionPlan, error) {
 	return uc.repo.ListAll(ctx)
 }
+
+// Update replaces mutable fields of an existing plan (name, duration, credits).
+func (uc *PlanUseCase) Update(ctx context.Context, plan *model.SubscriptionPlan) error {
+	// Ensure exists
+	_, err := uc.repo.FindByID(ctx, plan.ID)
+	if err != nil {
+		return fmt.Errorf("plan not found: %w", err)
+	}
+	return uc.repo.Save(ctx, plan)
+}
+
+// Delete removes a plan by id. Repository should enforce foreign key constraints.
+func (uc *PlanUseCase) Delete(ctx context.Context, id string) error {
+	// Ensure exists first
+	_, err := uc.repo.FindByID(ctx, id)
+	if err != nil {
+		return fmt.Errorf("plan not found: %w", err)
+	}
+	return uc.repo.Delete(ctx, id)
+}
