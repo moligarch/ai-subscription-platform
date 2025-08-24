@@ -57,10 +57,12 @@ type AIConfig struct {
 
 type PaymentConfig struct {
 	ZarinPal struct {
-		MerchantID   string `yaml:"merchant_id"`
-		CallbackURL  string `yaml:"callback_url"`
-		CallbackPort int    `yaml:"callback_port"`
-		Sandbox      bool   `yaml:"sandbox"`
+		MerchantID      string `yaml:"merchant_id"`
+		CallbackURL     string `yaml:"callback_url"`
+		CallbackPort    int    `yaml:"callback_port"`
+		Sandbox         bool   `yaml:"sandbox"`
+		AccessToken     string `yaml:"access_token"`
+		GraphQLEndpoint string `yaml:"graphql_endpoint"`
 	} `yaml:"zarinpal"`
 }
 
@@ -133,7 +135,7 @@ func LoadConfig() (*Config, error) {
 	if cfg.Redis.URL == "" {
 		return nil, errors.New("redis.url is required")
 	}
-	
+
 	cfg.Runtime.Dev = dev
 	return &cfg, nil
 }
