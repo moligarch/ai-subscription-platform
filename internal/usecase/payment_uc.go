@@ -1,4 +1,3 @@
-// File: internal/usecase/payment_uc.go
 package usecase
 
 import (
@@ -15,6 +14,7 @@ import (
 // Compile-time check
 var _ PaymentUseCase = (*paymentUC)(nil)
 
+// PaymentUseCase defines payment orchestration at the application layer.
 type PaymentUseCase interface {
 	// Initiate returns the created payment and a redirect URL to the provider.
 	Initiate(ctx context.Context, userID, planID, callbackURL, description string, meta map[string]interface{}) (*model.Payment, string, error)
@@ -26,23 +26,35 @@ type PaymentUseCase interface {
 	SumByPeriod(ctx context.Context, qx any, period string) (int64, error)
 }
 
+// paymentUC implements PaymentUseCase using repository ports and a gateway adapter.
 type paymentUC struct {
 	payments repository.PaymentRepository
 	plans    repository.SubscriptionPlanRepository
 	gateway  adapter.PaymentGateway
 }
 
-func NewPaymentUseCase(payments repository.PaymentRepository, plans repository.SubscriptionPlanRepository, gateway adapter.PaymentGateway) *paymentUC {
+// NewPaymentUseCase wires dependencies via ports and returns the interface (not a concrete pointer).
+func NewPaymentUseCase(
+	payments repository.PaymentRepository,
+	plans repository.SubscriptionPlanRepository,
+	gateway adapter.PaymentGateway,
+) PaymentUseCase {
 	return &paymentUC{payments: payments, plans: plans, gateway: gateway}
 }
 
-func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, description string, meta map[string]interface{}) (*model.Payment, string, error) {
+// Initiate creates a Payment record (pending) and requests an authority + redirect URL from the provider.
+func (u *paymentUC) Initiate(
+	ctx context.Context,
+	userID, planID, callbackURL, description string,
+	meta map[string]interface{},
+) (*model.Payment, string, error) {
+	// Ensure plan exists and get amount.
 	plan, err := u.plans.FindByID(ctx, planID)
 	if err != nil {
 		return nil, "", err
 	}
 
-	// Request payment with provider
+	// Ask gateway to create a payment request.
 	authority, payURL, err := u.gateway.RequestPayment(ctx, plan.PriceIRR, description, callbackURL, meta)
 	if err != nil {
 		return nil, "", err
@@ -70,21 +82,23 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 	return p, payURL, nil
 }
 
+// Confirm verifies the payment with the provider and persists the result.
 func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmount int64) (*model.Payment, error) {
 	p, err := u.payments.FindByAuthority(ctx, nil, authority)
 	if err != nil {
 		return nil, err
 	}
+
 	refID, verifyErr := u.gateway.VerifyPayment(ctx, authority, expectedAmount)
 	now := time.Now()
 	if verifyErr != nil {
-		_ = u.payments.UpdateStatus(ctx, nil, p.ID, string(model.PaymentStatusFailed), nil, nil)
+		_ = u.payments.UpdateStatus(ctx, nil, p.ID, model.PaymentStatusFailed, nil, nil)
 		p.Status = model.PaymentStatusFailed
 		p.UpdatedAt = now
 		return p, verifyErr
 	}
-	// success
-	_ = u.payments.UpdateStatus(ctx, nil, p.ID, string(model.PaymentStatusSucceeded), &refID, &now)
+
+	_ = u.payments.UpdateStatus(ctx, nil, p.ID, model.PaymentStatusSucceeded, &refID, &now)
 	p.Status = model.PaymentStatusSucceeded
 	p.RefID = &refID
 	p.PaidAt = &now
@@ -92,6 +106,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 	return p, nil
 }
 
+// ConfirmAuto locates the payment to infer expected amount, then calls Confirm.
 func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (*model.Payment, error) {
 	p, err := u.payments.FindByAuthority(ctx, nil, authority)
 	if err != nil {
@@ -100,6 +115,7 @@ func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (*model.P
 	return u.Confirm(ctx, authority, p.Amount)
 }
 
+// SumByPeriod proxies to repository implementation (e.g., DATE_TRUNC at DB level).
 func (u *paymentUC) SumByPeriod(ctx context.Context, qx any, period string) (int64, error) {
 	return u.payments.SumByPeriod(ctx, qx, period)
 }

@@ -58,6 +58,7 @@ SELECT id, user_id, plan_id, payment_id, subscription_id, created_at
 		return nil, err
 	}
 	defer rows.Close()
+
 	var out []*model.Purchase
 	for rows.Next() {
 		var pu model.Purchase
@@ -66,5 +67,5 @@ SELECT id, user_id, plan_id, payment_id, subscription_id, created_at
 		}
 		out = append(out, &pu)
 	}
-	return out, rows.Err()
+	return out, nil
 }

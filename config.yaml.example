@@ -37,6 +37,8 @@ payment:
     callback_url: "https://your-domain.tld/payment/callback/zp"   # used to extract callback path
     callback_port: 9090          # optional; if absent we use admin.port
     sandbox: true
+    access_token: ""        # OAuth access token (required for Refund API)
+    graphql_endpoint: ""    # optional; defaults to https://api.zarinpal.com/api/v4/graphql
 
 scheduler:
   expiry_check_cron: "@daily"     # FYI (worker uses hourly ticker in Phase 1)
