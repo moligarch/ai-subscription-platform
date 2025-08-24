@@ -1,3 +1,4 @@
+// File: internal/infra/db/postgres/postgres_user_repo.go
 package postgres
 
 import (
@@ -13,130 +14,87 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
-// Ensure interface compliance
-var _ repository.UserRepository = (*PostgresUserRepository)(nil)
+var _ repository.UserRepository = (*PostgresUserRepo)(nil)
 
-// PostgresUserRepository is a Postgres adapter for domain.UserRepository.
-type PostgresUserRepository struct {
+type PostgresUserRepo struct {
 	pool *pgxpool.Pool
 }
 
-// NewPostgresUserRepository constructs a new PostgresUserRepository.
-func NewPostgresUserRepository(pool *pgxpool.Pool) *PostgresUserRepository {
-	return &PostgresUserRepository{pool: pool}
+func NewPostgresUserRepo(pool *pgxpool.Pool) *PostgresUserRepo {
+	return &PostgresUserRepo{pool: pool}
 }
 
-// Save inserts or updates a user.
-func (r *PostgresUserRepository) Save(ctx context.Context, u *model.User) error {
-	const sql = `
-INSERT INTO users (id, telegram_id, username, registered_at, last_active_at)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (telegram_id) DO UPDATE
-  SET username        = EXCLUDED.username,
-      last_active_at  = EXCLUDED.last_active_at;
+func (r *PostgresUserRepo) Save(ctx context.Context, qx any, u *model.User) error {
+	const q = `
+INSERT INTO users (
+  id, telegram_id, username, registered_at, last_active_at,
+  allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
+) VALUES (
+  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
+) ON CONFLICT (id) DO UPDATE SET
+  telegram_id=$2, username=$3, last_active_at=$5,
+  allow_message_storage=$6, auto_delete_messages=$7, message_retention_days=$8, data_encrypted=$9, is_admin=$10;
 `
-	_, err := r.pool.Exec(ctx, sql,
-		u.ID,
-		u.TelegramID,
-		u.Username,
-		u.RegisteredAt,
-		u.LastActiveAt,
-	)
-	if err != nil {
-		return fmt.Errorf("postgres: saving user: %w", err)
+	switch v := qx.(type) {
+	case pgx.Tx:
+		_, err := v.Exec(ctx, q, u.ID, u.TelegramID, u.Username, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
+		return err
+	case *pgxpool.Conn:
+		_, err := v.Exec(ctx, q, u.ID, u.TelegramID, u.Username, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
+		return err
+	default:
+		_, err := r.pool.Exec(ctx, q, u.ID, u.TelegramID, u.Username, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
+		return err
 	}
-	return nil
 }
 
-// FindByTelegramID looks up a user by their Telegram ID.
-func (r *PostgresUserRepository) FindByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
-	const sql = `
-SELECT id, telegram_id, username, registered_at, last_active_at
-  FROM users
- WHERE telegram_id = $1;
+func (r *PostgresUserRepo) FindByTelegramID(ctx context.Context, qx any, tgID int64) (*model.User, error) {
+	const q = `
+SELECT id, telegram_id, username, registered_at, last_active_at,
+       allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
+  FROM users WHERE telegram_id=$1;
 `
-	row := r.pool.QueryRow(ctx, sql, tgID)
-
-	var (
-		id           string
-		telegramID   int64
-		username     string
-		registeredAt time.Time
-		lastActiveAt time.Time
-	)
-	if err := row.Scan(&id, &telegramID, &username, &registeredAt, &lastActiveAt); err != nil {
+	row := pickRow(r.pool, qx, q, tgID)
+	var u model.User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
-		return nil, fmt.Errorf("postgres: querying user: %w", err)
+		return nil, err
 	}
-
-	return &model.User{
-		ID:           id,
-		TelegramID:   telegramID,
-		Username:     username,
-		RegisteredAt: registeredAt,
-		LastActiveAt: lastActiveAt,
-	}, nil
+	return &u, nil
 }
 
-func (r *PostgresUserRepository) FindByID(ctx context.Context, id string) (*model.User, error) {
-	const sql = `
-SELECT id, telegram_id, username, registered_at, last_active_at
-  FROM users
- WHERE id = $1;
-`
-	row := r.pool.QueryRow(ctx, sql, id)
-
-	var (
-		userID       string
-		telegramID   int64
-		username     *string
-		registeredAt time.Time
-		lastActive   *time.Time
-	)
-	if err := row.Scan(&userID, &telegramID, &username, &registeredAt, &lastActive); err != nil {
+func (r *PostgresUserRepo) FindByID(ctx context.Context, qx any, id string) (*model.User, error) {
+	const q = `
+SELECT id, telegram_id, username, registered_at, last_active_at,
+       allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
+  FROM users WHERE id=$1;`
+	row := pickRow(r.pool, qx, q, id)
+	var u model.User
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, domain.ErrNotFound
 		}
-		return nil, fmt.Errorf("postgres: querying user by id: %w", err)
+		return nil, err
 	}
-	u := &model.User{
-		ID:           userID,
-		TelegramID:   telegramID,
-		Username:     "",
-		RegisteredAt: registeredAt,
-	}
-	if username != nil {
-		u.Username = *username
-	}
-	if lastActive != nil {
-		u.LastActiveAt = *lastActive
-	}
-	return u, nil
+	return &u, nil
 }
 
-// CountUsers returns total users count.
-func (r *PostgresUserRepository) CountUsers(ctx context.Context) (int, error) {
-	const sql = `SELECT COUNT(*) FROM users;`
+func (r *PostgresUserRepo) CountUsers(ctx context.Context, qx any) (int, error) {
+	row := pickRow(r.pool, qx, `SELECT COUNT(*) FROM users;`)
 	var n int
-	row := r.pool.QueryRow(ctx, sql)
 	if err := row.Scan(&n); err != nil {
-		return 0, fmt.Errorf("postgres CountUsers: %w", err)
+		return 0, fmt.Errorf("count users: %w", err)
 	}
 	return n, nil
 }
 
-// CountInactiveUsers counts users whose last_active_at <= since OR (last_active_at IS NULL AND registered_at <= since)
-func (r *PostgresUserRepository) CountInactiveUsers(ctx context.Context, since time.Time) (int, error) {
-	const sql = `
-SELECT COUNT(*) FROM users
-WHERE (last_active_at IS NULL AND registered_at <= $1) OR (last_active_at <= $1);
-`
+func (r *PostgresUserRepo) CountInactiveUsers(ctx context.Context, qx any, since time.Time) (int, error) {
+	row := pickRow(r.pool, qx, `SELECT COUNT(*) FROM users WHERE last_active_at IS NULL OR last_active_at < $1;`, since)
 	var n int
-	row := r.pool.QueryRow(ctx, sql, since)
 	if err := row.Scan(&n); err != nil {
-		return 0, fmt.Errorf("postgres CountInactiveUsers: %w", err)
+		return 0, fmt.Errorf("count inactive: %w", err)
 	}
 	return n, nil
 }
