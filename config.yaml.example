@@ -1,17 +1,16 @@
 bot:
   token: "BOT_TOKEN"
-  mode: "polling"
-  port: 9000
+  mode: "polling"         # webhook | polling
+  port: 9000              # only used if you later implement webhook
   url: "http://localhost:9000"
   admin_ids:
     - 12345689
 
 log:
-  level: "info" # debug, info, warn, error
-
+  level: "info"           # debug, info, warn, error
 
 admin:
-  port: 9090
+  port: 9090              # fallback port for HTTP server (incl. payment callback)
 
 database:
   url: "postgres://postgres:postgres@127.0.0.1:5432/subscription_test?sslmode=disable"
@@ -23,17 +22,22 @@ redis:
   ttl: "1h"
 
 ai:
-  openai_key: "sk-..."
-  gemini_key: ""
+  openai_key: ""          # if present and gemini_key is empty -> OpenAI is used
+  gemini_key: "YOUR_GEMINI_KEY"
   gemini_url: "https://generativelanguage.googleapis.com"
-  default_model: "gpt-4"
+  default_model: "gpt-4o-mini"
+  metis_key: "YOUR-METIS-KEY"
+  metis_base_url: "https://api.metisai.ir/openai/v1"
 
 payment:
   zarinpal:
     merchant_id: "YOUR-MERCHANT-ID"
-    callback_url: "https://your-domain.tld/payment/callback/zp"
+    callback_url: "https://your-domain.tld/payment/callback/zp"   # used to extract callback path
+    callback_port: 9090          # optional; if absent we use admin.port
     sandbox: true
 
-
 scheduler:
-  expiry_check_cron: "0 0 * * *"
+  expiry_check_cron: "@daily"     # FYI (worker uses hourly ticker in Phase 1)
+
+security:
+  encryption_key: "0123456789abcdef0123456789abcdef" # 32 bytes (AES-256); replace in prod

@@ -1,106 +1,185 @@
--- extensions
+-- Extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- users table
+-- =============================================================
+-- USERS
+-- =============================================================
+-- Privacy and admin flags are included to support v1 features and future panel.
 CREATE TABLE IF NOT EXISTS users (
-  id              UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-  telegram_id     BIGINT      NOT NULL UNIQUE,
-  username        TEXT,
-  registered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_active_at  TIMESTAMPTZ NULL
+  id                      UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  telegram_id             BIGINT       NOT NULL UNIQUE,
+  username                TEXT,
+  registered_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  last_active_at          TIMESTAMPTZ  NULL,
+  -- Privacy
+  allow_message_storage   BOOLEAN      NOT NULL DEFAULT TRUE,
+  auto_delete_messages    BOOLEAN      NOT NULL DEFAULT FALSE,
+  message_retention_days  INTEGER      NOT NULL DEFAULT 0,
+  data_encrypted          BOOLEAN      NOT NULL DEFAULT TRUE,
+  -- Admin flag (optional convenience in addition to config-based list)
+  is_admin                BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
--- subscription_plans table
-CREATE TABLE IF NOT EXISTS subscription_plans (
-  id            UUID        PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name          TEXT        NOT NULL UNIQUE,
-  duration_days INTEGER     NOT NULL CHECK (duration_days > 0),
-  credits       INTEGER     NOT NULL CHECK (credits >= 0),
-  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active_at);
 
--- user_subscriptions table
--- status: 'reserved' | 'active' | 'finished' | 'cancelled'
+-- =============================================================
+-- SUBSCRIPTION PLANS
+-- =============================================================
+-- price_irr is defaulted to 0 initially to avoid breaking older code paths
+-- until repositories are updated to set a proper price.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'subscription_status') THEN
-    CREATE TYPE subscription_status AS ENUM ('reserved', 'active', 'finished', 'cancelled');
+    CREATE TYPE subscription_status AS ENUM ('reserved','active','finished','cancelled');
   END IF;
 END$$;
 
+CREATE TABLE IF NOT EXISTS subscription_plans (
+  id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name           TEXT         NOT NULL UNIQUE,
+  duration_days  INTEGER      NOT NULL CHECK (duration_days > 0),
+  credits        INTEGER      NOT NULL CHECK (credits >= 0),
+  price_irr      BIGINT       NOT NULL DEFAULT 0 CHECK (price_irr >= 0),
+  created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- =============================================================
+-- USER SUBSCRIPTIONS
+-- =============================================================
 CREATE TABLE IF NOT EXISTS user_subscriptions (
-  id                  UUID                 PRIMARY KEY DEFAULT uuid_generate_v4(),
-  user_id             UUID                 NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  plan_id             UUID                 NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
-  -- when subscription was created (recording time)
-  created_at          TIMESTAMPTZ          NOT NULL DEFAULT now(),
-  -- scheduled_start_at: when a reserved subscription is scheduled to start (NULL for immediate/active)
-  scheduled_start_at  TIMESTAMPTZ          NULL,
-  -- start_at: when subscription actually started (NULL until active)
-  start_at            TIMESTAMPTZ          NULL,
-  -- expires_at: calculated base on start_at + plan.duration_days when the subscription is active or reserved
-  expires_at          TIMESTAMPTZ          NULL,
-  -- remaining credits (>=0)
-  remaining_credits   INTEGER              NOT NULL DEFAULT 0 CHECK (remaining_credits >= 0),
-  -- status enum
-  status              subscription_status  NOT NULL DEFAULT 'reserved'
+  id                   UUID                 PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id              UUID                 NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan_id              UUID                 NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
+  created_at           TIMESTAMPTZ          NOT NULL DEFAULT NOW(),
+  scheduled_start_at   TIMESTAMPTZ          NULL,
+  start_at             TIMESTAMPTZ          NULL,
+  expires_at           TIMESTAMPTZ          NULL,
+  remaining_credits    INTEGER              NOT NULL DEFAULT 0 CHECK (remaining_credits >= 0),
+  status               subscription_status  NOT NULL DEFAULT 'reserved'
 );
 
--- payments
-CREATE TABLE IF NOT EXISTS payments (
-    id UUID PRIMARY KEY,
-    user_id UUID NOT NULL,
-    plan_id UUID NOT NULL,
-    provider TEXT NOT NULL,
-    amount BIGINT NOT NULL,
-    currency TEXT NOT NULL,
-    authority TEXT,
-    ref_id TEXT,
-    status TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
-    paid_at TIMESTAMPTZ,
-    callback TEXT,
-    description TEXT,
-    meta JSONB,
-    subscription_id UUID
-);
-
--- purchase history (append-only)
-CREATE TABLE IF NOT EXISTS purchases (
-    id UUID PRIMARY KEY,
-    user_id UUID NOT NULL,
-    plan_id UUID NOT NULL,
-    payment_id UUID NOT NULL REFERENCES payments(id) ON DELETE RESTRICT,
-    subscription_id UUID NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL
-);
-
--- Indexes and constraints
--- Ensure only one active subscription per (user, plan) — permitted multiple active plans across different plan_id
-CREATE UNIQUE INDEX IF NOT EXISTS uq_user_plan_active ON user_subscriptions(user_id, plan_id)
+-- Only one ACTIVE subscription per (user, plan)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_plan_active
+  ON user_subscriptions(user_id, plan_id)
   WHERE status = 'active';
 
--- To quickly find a user's active subscription(s) and reserved
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status ON user_subscriptions(user_id, status);
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_expires_at ON user_subscriptions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_user_subscriptions_scheduled_start ON user_subscriptions(scheduled_start_at);
+-- Fast lookups
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status
+  ON user_subscriptions(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_expires_at
+  ON user_subscriptions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_user_subscriptions_scheduled_start
+  ON user_subscriptions(scheduled_start_at);
 
-CREATE INDEX IF NOT EXISTS idx_payments_user ON payments (user_id);
-CREATE INDEX IF NOT EXISTS idx_payments_plan ON payments (plan_id);
-CREATE INDEX IF NOT EXISTS idx_payments_authority ON payments (authority);
-CREATE INDEX IF NOT EXISTS idx_payments_status ON payments (status);
+-- =============================================================
+-- PAYMENTS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS payments (
+  id                       UUID         PRIMARY KEY,
+  user_id                  UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan_id                  UUID         NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
+  provider                 TEXT         NOT NULL,
+  amount                   BIGINT       NOT NULL,
+  currency                 TEXT         NOT NULL,
+  authority                TEXT,
+  ref_id                   TEXT,
+  status                   TEXT         NOT NULL,
+  created_at               TIMESTAMPTZ  NOT NULL,
+  updated_at               TIMESTAMPTZ  NOT NULL,
+  paid_at                  TIMESTAMPTZ,
+  callback                 TEXT,
+  description              TEXT,
+  meta                     JSONB,
+  subscription_id          UUID,
+  -- activation-code flow support for post-payment manual activation
+  activation_code          TEXT,
+  activation_expires_at    TIMESTAMPTZ
+);
 
-CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases (user_id);
-CREATE INDEX IF NOT EXISTS idx_purchases_plan ON purchases (plan_id);
-CREATE INDEX IF NOT EXISTS idx_purchases_payment ON purchases (payment_id);
+CREATE INDEX IF NOT EXISTS idx_payments_user      ON payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_payments_plan      ON payments(plan_id);
+CREATE INDEX IF NOT EXISTS idx_payments_authority ON payments(authority);
+CREATE INDEX IF NOT EXISTS idx_payments_status    ON payments(status);
 
--- Convenience view for stats
+-- =============================================================
+-- PURCHASE HISTORY (append-only)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS purchases (
+  id               UUID         PRIMARY KEY,
+  user_id          UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  plan_id          UUID         NOT NULL REFERENCES subscription_plans(id) ON DELETE RESTRICT,
+  payment_id       UUID         NOT NULL REFERENCES payments(id) ON DELETE RESTRICT,
+  subscription_id  UUID         NOT NULL,
+  created_at       TIMESTAMPTZ  NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchases_user    ON purchases(user_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_plan    ON purchases(plan_id);
+CREATE INDEX IF NOT EXISTS idx_purchases_payment ON purchases(payment_id);
+
+-- =============================================================
+-- CHAT SESSIONS + MESSAGES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id     UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  model       TEXT,
+  status      TEXT         NOT NULL DEFAULT 'active' CHECK (status IN ('active','finished')),
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- At most one active chat per user (business rule)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_active_chat_by_user
+  ON chat_sessions(user_id)
+  WHERE status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_user   ON chat_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_sessions_status ON chat_sessions(status);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id          UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  session_id  UUID         NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  role        VARCHAR(20)  NOT NULL CHECK (role IN ('user','assistant','system')),
+  content     TEXT         NOT NULL,
+  tokens      INTEGER      NOT NULL DEFAULT 0,
+  encrypted   BOOLEAN      NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at);
+
+-- =============================================================
+-- VIEWS (STATS)
+-- =============================================================
+-- Active = active + reserved (for business reporting)
 CREATE MATERIALIZED VIEW IF NOT EXISTS v_active_subscriptions_by_plan AS
-SELECT sp.id AS plan_id, sp.name AS plan_name, COUNT(us.*) AS active_count
-FROM subscription_plans sp
-LEFT JOIN user_subscriptions us
-  ON us.plan_id = sp.id
- AND us.status IN ('active','reserved') -- reserved counts as active for stats per requirement
-GROUP BY sp.id, sp.name;
+SELECT sp.id AS plan_id,
+       sp.name AS plan_name,
+       COUNT(us.*) AS active_count
+  FROM subscription_plans sp
+  LEFT JOIN user_subscriptions us
+    ON us.plan_id = sp.id
+   AND us.status IN ('active','reserved')
+ GROUP BY sp.id, sp.name;
 
+-- Optional helper to refresh
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY v_active_subscriptions_by_plan;
+
+
+-- =============================================================
+-- VIEWS (STATS)
+-- =============================================================
+-- notification log: further analysis
+CREATE TABLE IF NOT EXISTS subscription_notifications (
+  id               UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  subscription_id  UUID         NOT NULL REFERENCES user_subscriptions(id) ON DELETE CASCADE,
+  user_id          UUID         NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind             TEXT         NOT NULL CHECK (kind IN ('expiry')),
+  threshold_days   INTEGER      NOT NULL CHECK (threshold_days >= 0),
+  sent_at          TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  UNIQUE (subscription_id, kind, threshold_days)
+);
+
+CREATE INDEX IF NOT EXISTS idx_subnotif_user ON subscription_notifications(user_id);
