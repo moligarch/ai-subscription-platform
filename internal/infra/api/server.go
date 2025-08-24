@@ -1,5 +1,5 @@
-// File: internal/infra/http/server.go
-package httpapi
+// File: internal/infra/api/server.go
+package api
 
 import (
 	"encoding/json"

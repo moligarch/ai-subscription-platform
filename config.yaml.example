@@ -7,7 +7,9 @@ bot:
     - 12345689
 
 log:
-  level: "info"           # debug, info, warn, error
+  level: info      # trace | debug | info | warn | error
+  format: json     # json | console
+  sampling: true   # enable sampling in prod
 
 admin:
   port: 9090              # fallback port for HTTP server (incl. payment callback)
