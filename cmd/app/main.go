@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,16 +13,19 @@ import (
 	"syscall"
 	"time"
 
+	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/sched"
+
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	aiAdapters "telegram-ai-subscription/internal/infra/adapters/ai"
 	payAdapters "telegram-ai-subscription/internal/infra/adapters/payment"
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
-	pg "telegram-ai-subscription/internal/infra/db/postgres"
-	httpapi "telegram-ai-subscription/internal/infra/http"
+
+	"telegram-ai-subscription/internal/infra/api"
+	"telegram-ai-subscription/internal/infra/logging"
 	red "telegram-ai-subscription/internal/infra/redis"
-	"telegram-ai-subscription/internal/infra/sched"
 	"telegram-ai-subscription/internal/infra/security"
 	"telegram-ai-subscription/internal/usecase"
 )
@@ -32,43 +34,43 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// ---- CLI flags ----
-	cfgPath := flag.String("config", "config.yaml", "path to YAML config file")
-	devMode := flag.Bool("dev", false, "enable developer mode (bypass some flows)")
-	flag.Parse()
-
-	cfg, err := config.LoadConfig(*cfgPath, *devMode)
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	// ---- logging (zerolog) ----
+	logger := logging.New(cfg.Log, cfg.Runtime.Dev)
+
 	if cfg.Runtime.Dev {
-		log.Printf("[DEV MODE] Enabled")
+		logger.Info().Msg("[DEV MODE] Enabled")
 	}
 
-	// ---- Postgres ----
+	// ---- postgres ----
 	pool, err := pg.NewPgxPool(ctx, cfg.Database.URL, 10)
 	if err != nil {
-		log.Fatalf("postgres: %v", err)
+		logger.Fatal().Err(err).Msg("postgres")
 	}
 	defer pool.Close()
 
-	// ---- Redis ----
+	// ---- redis ----
 	redisClient, err := red.NewClient(ctx, &cfg.Redis)
 	if err != nil {
-		log.Fatalf("redis: %v", err)
+		logger.Fatal().Err(err).Msg("redis")
 	}
 	rateLimiter := red.NewRateLimiter(redisClient)
 	chatCache := red.NewChatCache(redisClient, cfg.Redis.TTL)
+	locker := red.NewLocker(redisClient)
 
-	// ---- Encryption ----
+	// ---- encryption ----
 	encKey := cfg.Security.EncryptionKey
 	if len(encKey) != 32 {
-		log.Printf("WARNING: security.encryption_key not set or not 32 bytes; falling back to dev key (INSECURE)")
+		logger.Warn().Msg("security.encryption_key not 32 bytes; using insecure dev key")
 		encKey = "0123456789abcdef0123456789abcdef"
 	}
 	encSvc, err := security.NewEncryptionService(encKey)
 	if err != nil {
-		log.Fatalf("encryption: %v", err)
+		logger.Fatal().Err(err).Msg("encryption")
 	}
 
 	// ---- Repositories ----
@@ -85,36 +87,38 @@ func main() {
 	planUC := usecase.NewPlanUseCase(planRepo)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo)
 
-	// ---- AI Adapter (Metis -> Gemini -> OpenAI) ----
+	// ---- AI Adapters (Metis -> Gemini -> OpenAI), then concurrency limiter ----
 	var ai adapter.AIServiceAdapter
 	if cfg.AI.MetisKey != "" {
 		ai, err = aiAdapters.NewMetisOpenAIAdapter(cfg.AI.MetisKey, cfg.AI.DefaultModel, cfg.AI.MetisBaseURL)
 		if err != nil {
-			log.Fatalf("metis adapter: %v", err)
+			logger.Fatal().Err(err).Msg("metis adapter")
 		}
-		log.Printf("AI adapter: Metis(OpenAI compatible) base=%s model=%s", cfg.AI.MetisBaseURL, cfg.AI.DefaultModel)
+		logger.Info().Str("base", cfg.AI.MetisBaseURL).Str("model", cfg.AI.DefaultModel).Msg("AI=Metis(OpenAI)")
 	} else if cfg.AI.GeminiKey != "" {
 		ai, err = aiAdapters.NewGeminiAdapter(cfg.AI.GeminiKey, cfg.AI.GeminiURL, []string{cfg.AI.DefaultModel})
 		if err != nil {
-			log.Fatalf("gemini adapter: %v", err)
+			logger.Fatal().Err(err).Msg("gemini adapter")
 		}
-		log.Printf("AI adapter: Gemini base=%s model=%s", cfg.AI.GeminiURL, cfg.AI.DefaultModel)
+		logger.Info().Str("base", cfg.AI.GeminiURL).Str("model", cfg.AI.DefaultModel).Msg("AI=Gemini")
 	} else if cfg.AI.OpenAIKey != "" {
 		ai, err = aiAdapters.NewOpenAIAdapter(cfg.AI.OpenAIKey, cfg.AI.DefaultModel)
 		if err != nil {
-			log.Fatalf("openai adapter: %v", err)
+			logger.Fatal().Err(err).Msg("openai adapter")
 		}
-		log.Printf("AI adapter: OpenAI model=%s", cfg.AI.DefaultModel)
+		logger.Info().Str("model", cfg.AI.DefaultModel).Msg("AI=OpenAI")
 	} else {
-		log.Fatalf("no AI provider configured: set ai.metis_key or ai.gemini_key or ai.openai_key in %s", *cfgPath)
+		logger.Fatal().Msg("no AI provider configured")
 	}
-	chatUC := usecase.NewChatUseCase(chatRepo, ai, subUC, cfg.Runtime.Dev)
+	ai = aiAdapters.NewLimitedAI(ai, cfg.AI.ConcurrentLimit)
 
-	pgw, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)
+	chatUC := usecase.NewChatUseCase(chatRepo, ai, subUC, locker, logger, cfg.Runtime.Dev)
+
+	zp, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)
 	if err != nil {
-		log.Fatalf("zarinpal gateway: %v", err)
+		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
-	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, pgw)
+	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, zp)
 
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo)
 	notifUC := usecase.NewNotificationUseCase(subRepo)
@@ -126,49 +130,58 @@ func main() {
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cbURL)
 
 	// ---- Telegram ----
-	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, 8)
+	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, cfg.Bot.Workers)
 	if err != nil {
-		log.Fatalf("telegram: %v", err)
+		logger.Fatal().Err(err).Msg("telegram adapter")
 	}
 	if strings.ToLower(cfg.Bot.Mode) != "polling" {
-		log.Printf("bot.mode=%s not implemented; falling back to polling", cfg.Bot.Mode)
+		logger.Warn().Str("mode", cfg.Bot.Mode).Msg("bot.mode not implemented; using polling")
 	}
 	go func() {
 		if err := botAdapter.StartPolling(ctx); err != nil {
-			log.Printf("telegram polling stopped: %v", err)
+			logger.Error().Err(err).Msg("telegram polling stopped")
 		}
 	}()
 
-	// ---- HTTP callback server ----
+	// ---- HTTP callback server with guards ----
 	cbPath := "/api/payment/callback"
 	if u := strings.TrimSpace(cfg.Payment.ZarinPal.CallbackURL); u != "" {
 		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
 			cbPath = parsed.Path
 		}
 	}
-	srv := httpapi.NewServer(paymentUC, cbPath)
+	srv := api.NewServer(paymentUC, cbPath)
 	mux := http.NewServeMux()
 	srv.Register(mux)
+
+	handler := api.Chain(mux,
+		api.TraceID(logger),
+		api.RequestLog(logger),
+		api.Recover(logger),
+		api.Timeout(2*time.Second),
+	)
+
 	httpPort := cfg.Payment.ZarinPal.CallbackPort
 	if httpPort == 0 {
 		httpPort = cfg.Admin.Port
 	}
-	server := &http.Server{Addr: fmt.Sprintf(":%d", httpPort), Handler: mux}
+	server := &http.Server{Addr: fmt.Sprintf(":%d", httpPort), Handler: handler}
 	go func() {
-		log.Printf("http callback listening on %s path=%s", server.Addr, cbPath)
+		logger.Info().Str("addr", server.Addr).Str("path", cbPath).Msg("http callback listening")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("http server error: %v", err)
+			logger.Error().Err(err).Msg("http server error")
 		}
 	}()
 
-	// ---- Expiry worker (hourly) ----
+	// ---- Expiry worker: hourly sweep ----
 	worker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo)
 	go func() { _ = worker.Run(ctx) }()
 
-	// ---- Graceful shutdown ----
+	// ---- Shutdown ----
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	<-sigc
-	log.Println("shutdown requested")
+	logger.Info().Msg("shutdown requested")
 	cancel()
+	_ = server.Shutdown(context.Background())
 }
