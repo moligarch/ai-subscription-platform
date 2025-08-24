@@ -1,69 +1,61 @@
+// File: internal/usecase/user_uc.go
 package usecase
 
 import (
 	"context"
 	"time"
 
-	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
-
-	"github.com/google/uuid"
 )
 
-// UserUseCase handles user-related business logic.
-type UserUseCase struct {
-	userRepo repository.UserRepository
+// Compile-time check
+var _ UserUseCase = (*userUC)(nil)
+
+// UserUseCase exposes user-related operations used by bot/admin flows.
+type UserUseCase interface {
+	RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error)
+	GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error)
+	Count(ctx context.Context) (int, error)
+	CountInactiveSince(ctx context.Context, since time.Time) (int, error)
 }
 
-// NewUserUseCase constructs a UserUseCase.
-func NewUserUseCase(userRepo repository.UserRepository) *UserUseCase {
-	return &UserUseCase{userRepo: userRepo}
+type userUC struct {
+	users repository.UserRepository
 }
 
-// RegisterOrFetch ensures a user exists, creating if needed.
-// If username is non-nil, it updates it on conflict.
-func (u *UserUseCase) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error) {
-	usr, err := u.userRepo.FindByTelegramID(ctx, tgID)
+func NewUserUseCase(users repository.UserRepository) *userUC { return &userUC{users: users} }
+
+func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error) {
+	usr, err := u.users.FindByTelegramID(ctx, nil, tgID)
 	if err == nil {
-		// Optionally update username if changed
-		if username != "" && (usr.Username == "" || usr.Username != username) {
+		// update username/last_active if changed
+		if usr.Username != username && username != "" {
 			usr.Username = username
-			usr.LastActiveAt = time.Now()
-			if err := u.userRepo.Save(ctx, usr); err != nil {
-				return nil, err
-			}
 		}
+		usr.Touch()
+		_ = u.users.Save(ctx, nil, usr)
 		return usr, nil
 	}
-	if err != domain.ErrNotFound {
+	// not found -> create
+	nu, e := model.NewUser("", tgID, username)
+	if e != nil {
+		return nil, e
+	}
+	if err := u.users.Save(ctx, nil, nu); err != nil {
 		return nil, err
 	}
-	// create new
-	newUsr := &model.User{
-		ID:           uuid.NewString(),
-		TelegramID:   tgID,
-		Username:     username,
-		RegisteredAt: time.Now(),
-		LastActiveAt: time.Now(),
-	}
-	if err := u.userRepo.Save(ctx, newUsr); err != nil {
-		return nil, err
-	}
-	return newUsr, nil
+	return nu, nil
 }
 
-// GetByTelegramID retrieves user or ErrNotFound.
-func (u *UserUseCase) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
-	return u.userRepo.FindByTelegramID(ctx, tgID)
+func (u *userUC) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
+	return u.users.FindByTelegramID(ctx, nil, tgID)
 }
 
-// CountUsers returns total number of users (delegates to repository)
-func (u *UserUseCase) CountUsers(ctx context.Context) (int, error) {
-	return u.userRepo.CountUsers(ctx)
+func (u *userUC) Count(ctx context.Context) (int, error) {
+	return u.users.CountUsers(ctx, nil)
 }
 
-// CountInactiveUsers returns count of users inactive since the provided time
-func (u *UserUseCase) CountInactiveUsers(ctx context.Context, since time.Time) (int, error) {
-	return u.userRepo.CountInactiveUsers(ctx, since)
+func (u *userUC) CountInactiveSince(ctx context.Context, since time.Time) (int, error) {
+	return u.users.CountInactiveUsers(ctx, nil, since)
 }

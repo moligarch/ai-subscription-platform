@@ -5,7 +5,7 @@ import "time"
 type PaymentStatus string
 
 const (
-	PaymentStatusInitiated PaymentStatus = "initiated" // we created a payment request on provider side
+	PaymentStatusInitiated PaymentStatus = "initiated" // created a payment request on provider side
 	PaymentStatusPending   PaymentStatus = "pending"   // redirected to gateway; awaiting verification
 	PaymentStatusSucceeded PaymentStatus = "succeeded" // verified OK at provider
 	PaymentStatusFailed    PaymentStatus = "failed"    // verification failed or explicitly failed
@@ -15,31 +15,36 @@ const (
 // Payment records the external payment intent/transaction.
 type Payment struct {
 	ID          string        // UUID
-	UserID      string        // UUID (your internal user ID)
-	PlanID      string        // UUID (which plan the user intends to buy)
-	Provider    string        // e.g. "zarinpal"
-	Amount      int64         // stored in Rials (integer), to avoid float errors
-	Currency    string        // ISO-ish code; for zarinpal typically "IRR"
-	Authority   string        // provider "authority" (token) returned by payment request
-	RefID       string        // provider reference id after verification (if success)
-	Status      PaymentStatus // see constants above
+	UserID      string        // UUID -> users.id
+	PlanID      string        // UUID -> subscription_plans.id
+	Provider    string        // e.g., "zarinpal"
+	Amount      int64         // in IRR
+	Currency    string        // e.g., "IRR"
+	Authority   string        // provider authority code
+	RefID       *string       // provider ref id (after verify)
+	Status      PaymentStatus // lifecycle status
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
-	PaidAt      *time.Time             // set when succeeded
-	Callback    string                 // the callback URL we used for provider
-	Description string                 // human-readable description shown to gateway
-	Meta        map[string]interface{} // optional extra metadata (serialized in DB as JSONB)
+	PaidAt      *time.Time     // set when succeeded
+	Callback    string         // callback URL
+	Description string         // human-readable description
+	Meta        map[string]any // extra data (JSONB)
+
 	// Link to created subscription (optional; set after we grant subscription):
 	SubscriptionID *string
+
+	// Manual post-payment activation support (optional v1 path):
+	ActivationCode      *string
+	ActivationExpiresAt *time.Time
 }
 
-// Purchase represents “what plan the user had before/now” as a historical trail.
-// This is separate from Payment (money) and Subscription (entitlement).
+// Purchase represents the historical link between user, plan and payment that
+// resulted in a subscription grant.
 type Purchase struct {
 	ID             string // UUID
 	UserID         string // UUID
 	PlanID         string // UUID
 	PaymentID      string // UUID -> Payment
-	SubscriptionID string // UUID -> UserSubscription created/updated
+	SubscriptionID string // UUID -> user_subscriptions.id
 	CreatedAt      time.Time
 }

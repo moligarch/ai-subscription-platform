@@ -1,3 +1,4 @@
+// File: internal/infra/redis/redis_client.go
 package redis
 
 import (
@@ -13,19 +14,20 @@ type Client struct {
 	cli *redis.Client
 }
 
-func NewRedisClient(cfg *config.RedisConfig) *Client {
-	opt := &redis.Options{
+func NewClient(ctx context.Context, cfg *config.RedisConfig) (*Client, error) {
+	opts := &redis.Options{
 		Addr:     cfg.URL,
 		Password: cfg.Password,
 		DB:       cfg.DB,
 	}
-	cli := redis.NewClient(opt)
-	return &Client{cli: cli}
+	c := redis.NewClient(opts)
+	if err := c.Ping(ctx).Err(); err != nil {
+		return nil, err
+	}
+	return &Client{cli: c}, nil
 }
 
-func (c *Client) Ping(ctx context.Context) error {
-	return c.cli.Ping(ctx).Err()
-}
+func (c *Client) Ping(ctx context.Context) error { return c.cli.Ping(ctx).Err() }
 
 func (c *Client) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error {
 	return c.cli.Set(ctx, key, value, expiration).Err()
@@ -43,6 +45,6 @@ func (c *Client) Expire(ctx context.Context, key string, expiration time.Duratio
 	return c.cli.Expire(ctx, key, expiration).Err()
 }
 
-func (c *Client) Close() error {
-	return c.cli.Close()
-}
+func (c *Client) Del(ctx context.Context, keys ...string) error { return c.cli.Del(ctx, keys...).Err() }
+
+func (c *Client) Close() error { return c.cli.Close() }
