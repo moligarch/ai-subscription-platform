@@ -19,7 +19,7 @@ type BotConfig struct {
 	Token    string  `yaml:"token"`
 	Mode     string  `yaml:"mode"` // polling | webhook (future)
 	Port     int     `yaml:"port"`
-	URL      string  `yaml:"url"`
+	Username string  `yaml:"username"`
 	Workers  int     `yaml:"workers"` // polling workers
 	AdminIDs []int64 `yaml:"admin_ids"`
 }
@@ -57,12 +57,11 @@ type AIConfig struct {
 
 type PaymentConfig struct {
 	ZarinPal struct {
-		MerchantID      string `yaml:"merchant_id"`
-		CallbackURL     string `yaml:"callback_url"`
-		CallbackPort    int    `yaml:"callback_port"`
-		Sandbox         bool   `yaml:"sandbox"`
-		AccessToken     string `yaml:"access_token"`
-		GraphQLEndpoint string `yaml:"graphql_endpoint"`
+		MerchantID   string `yaml:"merchant_id"`
+		CallbackURL  string `yaml:"callback_url"`
+		CallbackPort int    `yaml:"callback_port"`
+		Sandbox      bool   `yaml:"sandbox"`
+		AccessToken  string `yaml:"access_token"`
 	} `yaml:"zarinpal"`
 }
 
@@ -89,7 +88,7 @@ type Config struct {
 }
 
 func LoadConfig() (*Config, error) {
-	var configPath string
+	var configPath string = ""
 	var dev bool
 	flag.StringVar(&configPath, "config", "config.yaml", "path to config yaml")
 	flag.BoolVar(&dev, "dev", false, "development mode")
