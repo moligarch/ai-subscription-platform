@@ -22,7 +22,7 @@ func NewNoopBotAdapter() *NoopBotAdapter {
 }
 
 // SendMessage logs the message and simulates small delay.
-func (b *NoopBotAdapter) SendMessage(ctx context.Context, userID string, text string) error {
+func (b *NoopBotAdapter) SendMessage(ctx context.Context, tgID int64, text string) error {
 	// Simulate slight processing time and respect ctx
 	select {
 	case <-time.After(100 * time.Millisecond):
@@ -30,12 +30,11 @@ func (b *NoopBotAdapter) SendMessage(ctx context.Context, userID string, text st
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	log.Printf("[noop-telegram] To user %s: %s\n", userID, text)
+	log.Printf("[noop-telegram] To user %d: %s\n", tgID, text)
 	return nil
 }
 
-// SendMessageWithTelegramID logs the message and simulates small delay.
-func (b *NoopBotAdapter) SendMessageWithTelegramID(ctx context.Context, telegramID int64, text string) error {
+func (b *NoopBotAdapter) SendButtons(ctx context.Context, tgID int64, text string, rows [][]adapter.InlineButton) error {
 	// Simulate slight processing time and respect ctx
 	select {
 	case <-time.After(100 * time.Millisecond):
@@ -43,6 +42,6 @@ func (b *NoopBotAdapter) SendMessageWithTelegramID(ctx context.Context, telegram
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	log.Printf("[noop-telegram] To telegramID %d: %s\n", telegramID, text)
+	log.Printf("[noop-telegram] To user %d: %s [buttons: %v]\n", tgID, text, rows)
 	return nil
 }
