@@ -158,10 +158,3 @@ func (r *PostgresPaymentRepo) ListPendingOlderThan(ctx context.Context, qx any, 
 	}
 	return out, nil
 }
-
-// pickRow is a small helper used across repos to select the proper executor.
-// Implemented here for completeness; if you already have one in this package, remove this and reuse that implementation.
-
-type rowScanner interface {
-	Scan(dest ...interface{}) error
-}

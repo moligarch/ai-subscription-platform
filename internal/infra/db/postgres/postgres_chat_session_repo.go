@@ -27,7 +27,7 @@ type ChatSessionRepo struct {
 	encryptionSvc *security.EncryptionService
 }
 
-func NewChatSessionRepo(pool *pgxpool.Pool, cache *redis.ChatCache, encryptionSvc *security.EncryptionService) *ChatSessionRepo {
+func NewPostgresChatSessionRepo(pool *pgxpool.Pool, cache *redis.ChatCache, encryptionSvc *security.EncryptionService) *ChatSessionRepo {
 	return &ChatSessionRepo{pool: pool, cache: cache, encryptionSvc: encryptionSvc}
 }
 
@@ -122,7 +122,7 @@ func (r *ChatSessionRepo) Delete(ctx context.Context, qx any, id string) error {
 
 func (r *ChatSessionRepo) FindActiveByUser(ctx context.Context, qx any, userID string) (*model.ChatSession, error) {
 	const q = `SELECT id FROM chat_sessions WHERE user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1;`
- 	row := pickRow(r.pool, qx, q, userID)
+	row := pickRow(r.pool, qx, q, userID)
 	var id string
 	if err := row.Scan(&id); err != nil {
 		if err == pgx.ErrNoRows {
