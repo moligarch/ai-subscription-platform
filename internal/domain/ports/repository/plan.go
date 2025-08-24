@@ -5,7 +5,10 @@ import (
 	"telegram-ai-subscription/internal/domain/model"
 )
 
-// SubscriptionPlanRepository is the port for plan persistence.
+// -----------------------------
+// Subscription Plans
+// -----------------------------
+
 type SubscriptionPlanRepository interface {
 	Save(ctx context.Context, plan *model.SubscriptionPlan) error
 	FindByID(ctx context.Context, id string) (*model.SubscriptionPlan, error)
