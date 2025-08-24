@@ -1,56 +1,43 @@
-// File: internal/infra/db/postgres/transaction_manager.go
 package postgres
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+
+	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
-// TxManager provides a simple abstraction to run functions inside a SQL transaction.
-// It is transport-agnostic: repositories accept a generic `qx any` which can be a
-// pgx.Tx, *pgxpool.Conn, or nil. Usecases should call WithTx when multiple repo calls
-// must succeed or fail atomically.
-type TxManager interface {
-	WithTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error
-}
+// Ensure compile-time conformance
+var _ repository.TransactionManager = (*TxManager)(nil)
 
-var _ TxManager = (*PgxTxManager)(nil)
-
-type PgxTxManager struct {
+// TxManager implements repository.TransactionManager for Postgres (pgx).
+// It begins a transaction, invokes the callback, and commits/rolls back.
+// The tx handle is passed to the callback via the `qx any` argument (as pgx.Tx).
+type TxManager struct {
 	pool *pgxpool.Pool
 }
 
-func NewTxManager(pool *pgxpool.Pool) *PgxTxManager {
-	return &PgxTxManager{pool: pool}
+func NewTxManager(pool *pgxpool.Pool) *TxManager {
+	return &TxManager{pool: pool}
 }
 
-func (m *PgxTxManager) WithTx(ctx context.Context, fn func(ctx context.Context, tx pgx.Tx) error) error {
-	if fn == nil {
-		return fmt.Errorf("nil tx function")
-	}
-	conn, err := m.pool.Acquire(ctx)
+// WithTx opens a DB transaction and passes the tx handle to fn via qx.
+// If fn returns an error, the transaction is rolled back; otherwise it is committed.
+func (m *TxManager) WithTx(ctx context.Context, fn func(ctx context.Context, qx any) error) error {
+	// Default isolation level is ReadCommitted; adjust if you need stricter semantics.
+	tx, err := m.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("acquire conn: %w", err)
-	}
-	defer conn.Release()
-
-	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() {
-		// Ensure rollback if not committed
-		_ = tx.Rollback(ctx)
-	}()
-
-	if err := fn(ctx, tx); err != nil {
 		return err
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(ctx, tx); err != nil {
+		return err // rollback in defer
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit tx: %w", err)
+		return err
 	}
 	return nil
 }

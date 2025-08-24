@@ -117,6 +117,22 @@ CREATE INDEX IF NOT EXISTS idx_purchases_user    ON purchases(user_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_plan    ON purchases(plan_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_payment ON purchases(payment_id);
 
+-- Adds a strict uniqueness constraint so each payment can result in at most one purchase row.
+-- Safe to run multiple times: uses IF NOT EXISTS semantics via DO block.
+
+
+DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.table_constraints
+        WHERE constraint_type = 'UNIQUE'
+          AND table_name = 'purchases'
+          AND constraint_name = 'uq_purchases_payment') THEN
+      ALTER TABLE purchases ADD CONSTRAINT uq_purchases_payment UNIQUE (payment_id);
+  END IF;
+END$$;
+
+
 -- =============================================================
 -- CHAT SESSIONS + MESSAGES
 -- =============================================================
