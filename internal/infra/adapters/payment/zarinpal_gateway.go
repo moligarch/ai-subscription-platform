@@ -20,27 +20,34 @@ var _ adapter.PaymentGateway = (*ZarinPalGateway)(nil)
 // and GraphQL v4 for refunds.
 type ZarinPalGateway struct {
 	merchantID      string
-	callback        string
+	callback        string // absolute callback URL fallback
 	sandbox         bool
 	client          *http.Client
 	accessToken     string // OAuth2 access token (GraphQL)
-	graphqlEndpoint string // e.g. https://api.zarinpal.com/api/v4/graphql
+	graphqlEndpoint string // defaulted by sandbox flag; can be overridden via SetRefundAuth
 }
 
-// NewZarinPalGateway matches existing callsites/signature.
+// NewZarinPalGateway constructs a gateway with the desired callback base and environment.
+// callbackURL should be an absolute URL; if a relative path is later passed to RequestPayment,
+// we will fall back to this absolute value.
 func NewZarinPalGateway(merchantID, callbackURL string, sandbox bool) (*ZarinPalGateway, error) {
 	if merchantID == "" {
 		return nil, errors.New("merchant id empty")
 	}
-	if _, err := url.Parse(callbackURL); err != nil {
-		return nil, fmt.Errorf("invalid callback url: %w", err)
+	if u, err := url.Parse(callbackURL); err != nil || !u.IsAbs() {
+		return nil, fmt.Errorf("invalid callback url (must be absolute): %q", callbackURL)
 	}
 	gp := &ZarinPalGateway{
-		merchantID:      merchantID,
-		callback:        callbackURL,
-		sandbox:         sandbox,
-		client:          &http.Client{Timeout: 15 * time.Second},
-		graphqlEndpoint: "https://api.zarinpal.com/api/v4/graphql",
+		merchantID: merchantID,
+		callback:   callbackURL,
+		sandbox:    sandbox,
+		client:     &http.Client{Timeout: 15 * time.Second},
+	}
+	// Default GraphQL refund endpoint per env
+	if sandbox {
+		gp.graphqlEndpoint = "https://sandbox.zarinpal.com/api/v4/graphql"
+	} else {
+		gp.graphqlEndpoint = "https://next.zarinpal.com/api/v4/graphql"
 	}
 	return gp, nil
 }
@@ -55,19 +62,30 @@ func (z *ZarinPalGateway) SetRefundAuth(accessToken, graphqlEndpoint string) {
 
 func (z *ZarinPalGateway) Name() string { return "zarinpal" }
 
-func (z *ZarinPalGateway) endpoint(path string) string {
-	base := "https://api.zarinpal.com/pg/v4"
+func (z *ZarinPalGateway) apiBase() string {
+	// Per docs: payment_base_url is https://payment.zarinpal.com/pg/v4 (or sandbox)
 	if z.sandbox {
-		base = "https://sandbox.zarinpal.com/pg/v4"
+		return "https://sandbox.zarinpal.com/pg/v4"
 	}
-	return base + path
+	return "https://payment.zarinpal.com/pg/v4"
+}
+
+func (z *ZarinPalGateway) startPayURL(authority string) string {
+	if z.sandbox {
+		return fmt.Sprintf("https://sandbox.zarinpal.com/pg/StartPay/%s", authority)
+	}
+	return fmt.Sprintf("https://payment.zarinpal.com/pg/StartPay/%s", authority)
 }
 
 // RequestPayment calls ZarinPal /payment/request.json and returns (authority, payURL).
 func (z *ZarinPalGateway) RequestPayment(ctx context.Context, amountIRR int64, description, callbackURL string, meta map[string]interface{}) (string, string, error) {
+	// Normalize callback: if blank or not absolute, fall back to configured absolute callback
 	if callbackURL == "" {
 		callbackURL = z.callback
+	} else if u, err := url.Parse(callbackURL); err != nil || !u.IsAbs() {
+		callbackURL = z.callback
 	}
+
 	payload := map[string]any{
 		"merchant_id":  z.merchantID,
 		"amount":       amountIRR,
@@ -78,7 +96,7 @@ func (z *ZarinPalGateway) RequestPayment(ctx context.Context, amountIRR int64, d
 		payload["metadata"] = meta
 	}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, z.endpoint("/payment/request.json"), bytes.NewReader(b))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, z.apiBase()+"/payment/request.json", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := z.client.Do(req)
 	if err != nil {
@@ -98,11 +116,7 @@ func (z *ZarinPalGateway) RequestPayment(ctx context.Context, amountIRR int64, d
 	if out.Data.Code != 100 || out.Data.Authority == "" {
 		return "", "", errors.New("zarinpal request failed")
 	}
-	payURL := fmt.Sprintf("https://www.zarinpal.com/pg/StartPay/%s", out.Data.Authority)
-	if z.sandbox {
-		payURL = fmt.Sprintf("https://sandbox.zarinpal.com/pg/StartPay/%s", out.Data.Authority)
-	}
-	return out.Data.Authority, payURL, nil
+	return out.Data.Authority, z.startPayURL(out.Data.Authority), nil
 }
 
 // VerifyPayment calls /payment/verify.json and returns provider refID on success.
@@ -113,7 +127,7 @@ func (z *ZarinPalGateway) VerifyPayment(ctx context.Context, authority string, e
 		"authority":   authority,
 	}
 	b, _ := json.Marshal(payload)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, z.endpoint("/payment/verify.json"), bytes.NewReader(b))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, z.apiBase()+"/payment/verify.json", bytes.NewReader(b))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := z.client.Do(req)
 	if err != nil {
@@ -140,7 +154,7 @@ func (z *ZarinPalGateway) VerifyPayment(ctx context.Context, authority string, e
 // RefundPayment issues a refund via GraphQL AddRefund mutation.
 func (z *ZarinPalGateway) RefundPayment(ctx context.Context, sessionID string, amount int64, description string, method adapter.RefundMethod, reason adapter.RefundReason) (adapter.RefundResult, error) {
 	if z.accessToken == "" {
-		return adapter.RefundResult{}, errors.New("zarinpal refund requires access token: configure payment.zarinpal.access_token")
+		return adapter.RefundResult{}, errors.New("zarinpal refund requires access token")
 	}
 	type gqlReq struct {
 		Query     string                 `json:"query"`

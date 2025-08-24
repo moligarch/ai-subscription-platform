@@ -78,6 +78,7 @@ func main() {
 	planRepo := pg.NewPostgresPlanRepo(pool)
 	subRepo := pg.NewPostgresSubscriptionRepo(pool)
 	payRepo := pg.NewPostgresPaymentRepo(pool)
+	purchaseRepo := pg.NewPostgresPurchaseRepo(pool)
 	chatRepo := pg.NewPostgresChatSessionRepo(pool, chatCache, enc)
 
 	// ---- Use Cases ----
@@ -118,7 +119,7 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
-	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, zp)
+	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp)
 
 	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo)
 	notifUC := usecase.NewNotificationUseCase(subRepo)
@@ -151,7 +152,7 @@ func main() {
 	}()
 
 	// ---- HTTP callback server with guards ----
-	srv := api.NewServer(paymentUC, cbPath)
+	srv := api.NewServer(paymentUC, cbPath, cfg.Bot.Username)
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	handler := api.Chain(mux,
