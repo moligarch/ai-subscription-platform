@@ -1,78 +1,64 @@
+// File: internal/usecase/stats_uc.go
 package usecase
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
-// StatsUseCase aggregates read-only statistics used by admin endpoints / bot commands.
-type StatsUseCase struct {
-	userRepo repository.UserRepository
-	subRepo  repository.SubscriptionRepository
-	payRepo  repository.PaymentRepository
+// Compile-time check
+var _ StatsUseCase = (*statsUC)(nil)
+
+type StatsUseCase interface {
+	Totals(ctx context.Context) (users int, activeByPlan map[string]int, remainingCredits int, err error)
+	Revenue(ctx context.Context) (week int64, month int64, year int64, err error)
+	InactiveUsers(ctx context.Context, olderThan time.Time) (int, error)
 }
 
-// NewStatsUseCase constructs StatsUseCase.
-func NewStatsUseCase(u repository.UserRepository, s repository.SubscriptionRepository, p repository.PaymentRepository) *StatsUseCase {
-	return &StatsUseCase{userRepo: u, subRepo: s, payRepo: p}
+type statsUC struct {
+	users    repository.UserRepository
+	subs     repository.SubscriptionRepository
+	payments repository.PaymentRepository
 }
 
-// GetCounts returns user counts, inactive count, active subscriptions by plan and total credits.
-func (uc *StatsUseCase) GetCounts(ctx context.Context, inactiveWindow time.Duration) (totalUsers int, inactiveUsers int, activeByPlan map[string]int, totalCredits int, err error) {
-	totalUsers, err = uc.userRepo.CountUsers(ctx)
-	if err != nil {
-		err = fmt.Errorf("count users: %w", err)
-		return
-	}
-
-	since := time.Now().Add(-inactiveWindow)
-	inactiveUsers, err = uc.userRepo.CountInactiveUsers(ctx, since)
-	if err != nil {
-		err = fmt.Errorf("count inactive users: %w", err)
-		return
-	}
-
-	activeByPlan, err = uc.subRepo.CountActiveByPlan(ctx)
-	if err != nil {
-		err = fmt.Errorf("count active by plan: %w", err)
-		return
-	}
-
-	totalCredits, err = uc.subRepo.TotalRemainingCredits(ctx)
-	if err != nil {
-		err = fmt.Errorf("total remaining credits: %w", err)
-		return
-	}
-
-	return
+func NewStatsUseCase(users repository.UserRepository, subs repository.SubscriptionRepository, payments repository.PaymentRepository) *statsUC {
+	return &statsUC{users: users, subs: subs, payments: payments}
 }
 
-// GetPaymentsForPeriods returns the payments (Toman) for last 7/30/365 days.
-func (uc *StatsUseCase) GetPaymentsForPeriods(ctx context.Context) (week, month, year int64, err error) {
-	now := time.Now()
-
-	weekSince := now.Add(-7 * 24 * time.Hour)
-	week, err = uc.payRepo.TotalPaymentsSince(ctx, weekSince)
+func (s *statsUC) Totals(ctx context.Context) (int, map[string]int, int, error) {
+	users, err := s.users.CountUsers(ctx, nil)
 	if err != nil {
-		err = fmt.Errorf("week payments: %w", err)
-		return
+		return 0, nil, 0, err
 	}
-
-	monthSince := now.Add(-30 * 24 * time.Hour)
-	month, err = uc.payRepo.TotalPaymentsSince(ctx, monthSince)
+	active, err := s.subs.CountActiveByPlan(ctx, nil)
 	if err != nil {
-		err = fmt.Errorf("month payments: %w", err)
-		return
+		return 0, nil, 0, err
 	}
-
-	yearSince := now.Add(-365 * 24 * time.Hour)
-	year, err = uc.payRepo.TotalPaymentsSince(ctx, yearSince)
+	rem, err := s.subs.TotalRemainingCredits(ctx, nil)
 	if err != nil {
-		err = fmt.Errorf("year payments: %w", err)
-		return
+		return 0, nil, 0, err
 	}
-	return
+	return users, active, rem, nil
+}
+
+func (s *statsUC) Revenue(ctx context.Context) (int64, int64, int64, error) {
+	w, err := s.payments.SumByPeriod(ctx, nil, "week")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	m, err := s.payments.SumByPeriod(ctx, nil, "month")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	y, err := s.payments.SumByPeriod(ctx, nil, "year")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return w, m, y, nil
+}
+
+func (s *statsUC) InactiveUsers(ctx context.Context, olderThan time.Time) (int, error) {
+	return s.users.CountInactiveUsers(ctx, nil, olderThan)
 }
