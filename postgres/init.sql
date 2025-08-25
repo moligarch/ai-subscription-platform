@@ -63,6 +63,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_user_plan_active
   ON user_subscriptions(user_id, plan_id)
   WHERE status = 'active';
 
+  -- At most one RESERVED subscription per user
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_reserved_once
+  ON user_subscriptions(user_id)
+  WHERE status = 'reserved';
+
+
 -- Fast lookups
 CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_status
   ON user_subscriptions(user_id, status);

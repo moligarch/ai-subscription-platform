@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
@@ -54,6 +55,12 @@ func NewPaymentUseCase(
 func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, description string, meta map[string]interface{}) (*model.Payment, string, error) {
 	if userID == "" || planID == "" {
 		return nil, "", errors.New("missing user or plan")
+	}
+
+	if u.subs != nil {
+		if reserved, _ := u.subs.GetReserved(ctx, userID); len(reserved) > 0 {
+			return nil, "", domain.ErrAlreadyHasReserved
+		}
 	}
 
 	plan, err := u.plans.FindByID(ctx, planID)
