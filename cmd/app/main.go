@@ -152,7 +152,7 @@ func main() {
 	}()
 
 	// ---- HTTP callback server with guards ----
-	srv := api.NewServer(paymentUC, cbPath, cfg.Bot.Username)
+	srv := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
 	mux := http.NewServeMux()
 	srv.Register(mux)
 	handler := api.Chain(mux,

@@ -22,6 +22,10 @@ type PaymentRepository interface {
 	FindByActivationCode(ctx context.Context, qx any, code string) (*model.Payment, error)
 	// Reconciliation helper: list pending payments older than cutoff
 	ListPendingOlderThan(ctx context.Context, qx any, olderThan time.Time, limit int) ([]*model.Payment, error)
+
+	// UpdateStatusIfPending atomically changes status only if current status is 'pending' or 'initiated'.
+	// Returns true if a row was updated, false if not (e.g., already processed).
+	UpdateStatusIfPending(ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error)
 }
 
 // -----------------------------
