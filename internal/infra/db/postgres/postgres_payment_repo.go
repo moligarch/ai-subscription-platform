@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
@@ -157,4 +158,41 @@ func (r *PostgresPaymentRepo) ListPendingOlderThan(ctx context.Context, qx any, 
 		out = append(out, p)
 	}
 	return out, nil
+}
+
+// UpdateStatusIfPending atomically updates status only when current status is 'pending' or 'initiated'.
+func (r *PostgresPaymentRepo) UpdateStatusIfPending(
+	ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time,
+) (bool, error) {
+	query := `
+    UPDATE payments
+       SET status = $2,
+           ref_id = $3,
+           paid_at = $4,
+           updated_at = NOW()
+     WHERE id = $1
+       AND status IN ('pending','initiated')`
+
+	var ref *string = refID
+	var paid *time.Time = paidAt
+	var cmd pgconn.CommandTag
+	var err error
+	switch v := qx.(type) {
+	case pgx.Tx:
+		cmd, err = v.Exec(ctx, query, id, string(status), ref, paid)
+		if err != nil {
+			return false, err
+		}
+	case *pgxpool.Conn:
+		cmd, err = v.Exec(ctx, query, id, string(status), ref, paid)
+		if err != nil {
+			return false, err
+		}
+	default:
+		cmd, err = r.pool.Exec(ctx, query, id, string(status), ref, paid)
+		if err != nil {
+			return false, fmt.Errorf("update payment status: %w", err)
+		}
+	}
+	return cmd.RowsAffected() == 1, nil
 }
