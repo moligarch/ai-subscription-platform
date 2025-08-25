@@ -4,6 +4,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,52 +35,50 @@ func NewSubscriptionUseCase(subs repository.SubscriptionRepository, plans reposi
 }
 
 func (u *subscriptionUC) Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error) {
-	plan, err := u.plans.FindByID(ctx, planID)
-	if err != nil {
-		return nil, err
+	if strings.TrimSpace(userID) == "" || strings.TrimSpace(planID) == "" {
+		return nil, errors.New("missing user or plan")
 	}
 
-	// Check for active subscription
-	active, err := u.subs.FindActiveByUser(ctx, nil, userID)
-	if err != nil && err != domain.ErrNotFound {
-		return nil, err
+	// Load plan details
+	plan, err := u.plans.FindByID(ctx, planID)
+	if err != nil || plan == nil {
+		return nil, errors.New("plan not found")
 	}
 
 	now := time.Now()
-	if active == nil {
-		// Activate immediately
-		s := &model.UserSubscription{
-			ID:               uuid.NewString(),
-			UserID:           userID,
-			PlanID:           plan.ID,
-			CreatedAt:        now,
-			StartAt:          &now,
-			ExpiresAt:        ptrTime(now.AddDate(0, 0, plan.DurationDays)),
-			RemainingCredits: plan.Credits,
-			Status:           model.SubscriptionStatusActive,
-		}
-		if err := u.subs.Save(ctx, nil, s); err != nil {
-			return nil, err
-		}
-		return s, nil
-	}
+	// Do we already have an active subscription?
+	active, _ := u.subs.FindActiveByUser(ctx, nil, userID)
 
-	// Otherwise, reserve after the current active
-	startAt := *active.ExpiresAt
-	s := &model.UserSubscription{
+	sub := &model.UserSubscription{
 		ID:               uuid.NewString(),
 		UserID:           userID,
-		PlanID:           plan.ID,
+		PlanID:           planID,
 		CreatedAt:        now,
-		ScheduledStartAt: &startAt,
-		ExpiresAt:        ptrTime(startAt.AddDate(0, 0, plan.DurationDays)),
 		RemainingCredits: plan.Credits,
-		Status:           model.SubscriptionStatusReserved,
+		Status:           model.SubscriptionStatusReserved, // default; may flip to active
 	}
-	if err := u.subs.Save(ctx, nil, s); err != nil {
+
+	if active == nil {
+		// No active → activate immediately
+		sub.Status = model.SubscriptionStatusActive
+		sub.StartAt = &now
+		exp := now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+		sub.ExpiresAt = &exp
+	} else {
+		// Already active → reserve one (schedule if we know current expiry)
+		if active.ExpiresAt != nil {
+			sched := *active.ExpiresAt
+			sub.ScheduledStartAt = &sched
+			// Optionally compute a tentative expiry for visibility:
+			exp := sched.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+			sub.ExpiresAt = &exp
+		}
+	}
+
+	if err := u.subs.Save(ctx, nil, sub); err != nil {
 		return nil, err
 	}
-	return s, nil
+	return sub, nil
 }
 
 func (u *subscriptionUC) GetActive(ctx context.Context, userID string) (*model.UserSubscription, error) {
