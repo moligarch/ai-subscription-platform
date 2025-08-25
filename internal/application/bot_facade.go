@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/usecase"
@@ -105,51 +105,111 @@ func (b *BotFacade) HandleDeletePlan(ctx context.Context, id string) (string, er
 
 // HandleSubscribe starts payment flow for a plan.
 // PaymentUC.Initiate signature in your code expects amount as STRING.
-func (b *BotFacade) HandleSubscribe(ctx context.Context, tgID int64, planID string) (string, error) {
-	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
-	if err != nil {
-		return "", fmt.Errorf("ensure user: %w", err)
+func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planID string) (string, error) {
+	if strings.TrimSpace(planID) == "" {
+		return "Usage: /buy <plan_id>", nil
 	}
-	plan, err := b.PlanUC.Get(ctx, planID)
-	if err != nil {
-		return "", fmt.Errorf("plan not found: %w", err)
+	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
+	if err != nil || user == nil {
+		return "No user found. Try /start first.", nil
 	}
 
-	amountIRR := plan.PriceIRR
-	amountStr := strconv.FormatInt(amountIRR, 10)
+	// Build payment description (optional)
+	desc := "subscription purchase"
+	if f.PlanUC != nil {
+		if plan, _ := f.PlanUC.Get(ctx, planID); plan != nil {
+			desc = "Purchase: " + plan.Name
+		}
+	}
 
 	meta := map[string]interface{}{
-		"plan_name": plan.Name,
-		"user_tg":   tgID,
+		"user_tg": telegramID,
 	}
-	p, payURL, err := b.PaymentUC.Initiate(ctx, user.ID, plan.ID, amountStr, "Plan purchase", meta)
+	p, payURL, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
 	if err != nil {
-		return "", fmt.Errorf("initiate payment: %w", err)
+		if errors.Is(err, domain.ErrAlreadyHasReserved) {
+			return "You already have a reserved subscription.\n" +
+				"Please use /status to view it. You can purchase a new plan after it activates.", nil
+		}
+		return "Failed to initiate payment.", nil
 	}
-	_ = p
-	return fmt.Sprintf(
-		"Please complete your payment at: %s\nAfter success you'll be redirected and your plan will activate.",
-		payURL,
-	), nil
+
+	_ = p // we don’t need to show internal IDs here
+	msg := "Please complete your payment at: " + payURL + "\n" +
+		"After success you'll be redirected and your plan will activate."
+	return msg, nil
 }
 
-// HandleStatus shows active subscription.
-func (b *BotFacade) HandleStatus(ctx context.Context, tgID int64) (string, error) {
-	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
-	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+// HandleStatus shows active/reserved subscription.
+func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (string, error) {
+	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
+	if err != nil || user == nil {
+		return "No user found. Try /start first.", nil
 	}
-	sub, err := b.SubscriptionUC.GetActive(ctx, user.ID)
-	if err != nil || sub == nil {
-		return "You have no active or reserved subscription.", nil
+
+	var b strings.Builder
+	b.WriteString("📊 Status\n\n")
+
+	// Active
+	active, _ := f.SubscriptionUC.GetActive(ctx, user.ID)
+	if active != nil {
+		planName := active.PlanID
+		if f.PlanUC != nil {
+			if plan, _ := f.PlanUC.Get(ctx, active.PlanID); plan != nil {
+				planName = plan.Name
+			}
+		}
+		b.WriteString("✅ Active: ")
+		b.WriteString(planName)
+
+		// credits
+		if active.RemainingCredits > 0 {
+			b.WriteString(fmt.Sprintf("\n  - credits:  %d", active.RemainingCredits))
+		}
+
+		// expiry
+		if active.ExpiresAt != nil {
+			days := int(time.Until(*active.ExpiresAt).Hours() / 24)
+			if days < 0 {
+				days = 0
+			}
+			b.WriteString(fmt.Sprintf("\n  - expires: %s (%dd left)", active.ExpiresAt.Format("2006-01-02"), days))
+		}
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("• Active: none\n")
 	}
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Active plan: %s\n", sub.PlanID))
-	sb.WriteString(fmt.Sprintf("Credits: %d\n", sub.RemainingCredits))
-	if !sub.ExpiresAt.IsZero() {
-		sb.WriteString(fmt.Sprintf("Expires: %s\n", sub.ExpiresAt.Format("2006-01-02")))
+
+	// Reserved (list all)
+	reserved, _ := f.SubscriptionUC.GetReserved(ctx, user.ID)
+	if len(reserved) > 0 {
+		b.WriteString("• Reserved:\n")
+		for _, rs := range reserved {
+			planName := rs.PlanID
+			if f.PlanUC != nil {
+				if plan, _ := f.PlanUC.Get(ctx, rs.PlanID); plan != nil {
+					planName = plan.Name
+				}
+			}
+			line := "📌 " + planName
+			// Optional: show scheduled start if present
+			if rs.ScheduledStartAt != nil {
+				line += fmt.Sprintf("\n  - scheduled: %s", rs.ScheduledStartAt.Format("2006-01-02"))
+			}
+			// Show credits/expiry if pre-filled (depends on your UC policy)
+			if rs.RemainingCredits > 0 {
+				line += fmt.Sprintf("\n  - credits: %d", rs.RemainingCredits)
+			}
+			if rs.ExpiresAt != nil {
+				line += fmt.Sprintf("\n  - expires: %s", rs.ExpiresAt.Format("2006-01-02"))
+			}
+			b.WriteString(line + "\n")
+		}
+	} else {
+		b.WriteString("• Reserved: none\n")
 	}
-	return sb.String(), nil
+
+	return b.String(), nil
 }
 
 // HandleBalance shows remaining credits of active sub.
