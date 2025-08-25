@@ -115,6 +115,90 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 	}
 }
 
+type cbHandler func(ctx context.Context, chatID int64, data string) error
+
+// Exact-match callbacks
+func (r *RealTelegramBotAdapter) cbRoutes() map[string]cbHandler {
+	return map[string]cbHandler{
+		"cmd:menu": func(ctx context.Context, id int64, _ string) error {
+			return r.sendMainMenu(ctx, id, "Choose an action:")
+		},
+		"cmd:plans": func(ctx context.Context, id int64, _ string) error { return r.sendPlansMenu(ctx, id) },
+		"cmd:status": func(ctx context.Context, id int64, _ string) error {
+			text, err := r.facade.HandleStatus(ctx, id)
+			if err != nil {
+				text = "Failed to get status."
+			}
+			return r.sendMainMenu(ctx, id, text)
+		},
+		"cmd:chat": func(ctx context.Context, id int64, _ string) error { return r.sendModelMenu(ctx, id) },
+		"cmd:bye": func(ctx context.Context, id int64, _ string) error {
+			user, err := r.facade.UserUC.GetByTelegramID(ctx, id)
+			if err != nil || user == nil {
+				return r.SendMessage(ctx, id, "No user found. Try /start first.")
+			}
+			sess, err := r.facade.ChatUC.FindActiveSession(ctx, user.ID)
+			if err != nil || sess == nil {
+				return r.SendMessage(ctx, id, "No active chat session found.")
+			}
+			text, err := r.facade.HandleEndChat(ctx, id, sess.ID)
+			if err != nil {
+				text = "Failed to end chat."
+			}
+			return r.SendMessage(ctx, id, text)
+		},
+	}
+}
+
+// Prefix-match callbacks
+func (r *RealTelegramBotAdapter) cbPrefixRoutes() []struct {
+	Prefix string
+	Fn     cbHandler
+} {
+	return []struct {
+		Prefix string
+		Fn     cbHandler
+	}{
+		{
+			Prefix: "buy:",
+			Fn: func(ctx context.Context, id int64, data string) error {
+				planID := strings.TrimPrefix(data, "buy:")
+				_ = r.SendMessage(ctx, id, "در حال پردازش درخواست شما هستیم...")
+				text, err := r.facade.HandleSubscribe(ctx, id, planID)
+				if err != nil {
+					text = "Failed to initiate payment."
+				}
+				if url := extractFirstURL(text); url != "" {
+					rows := [][]adapter.InlineButton{
+						{{Text: "Pay now", URL: url}},
+						{{Text: "◀️ Menu", Data: "cmd:menu"}},
+					}
+					return r.SendButtons(ctx, id, text, rows)
+				}
+				return r.SendMessage(ctx, id, text)
+			},
+		},
+		{
+			Prefix: "chat:",
+			Fn: func(ctx context.Context, id int64, data string) error {
+				model := strings.TrimPrefix(data, "chat:")
+				text, err := r.facade.HandleStartChat(ctx, id, model)
+				if err != nil {
+					if errors.Is(err, domain.ErrActiveChatExists) {
+						text = "You already have an active chat session."
+					} else {
+						text = "Failed to start chat."
+					}
+				}
+				if err := r.SendMessage(ctx, id, text); err != nil {
+					return err
+				}
+				return r.sendEndChatButton(ctx, id)
+			},
+		},
+	}
+}
+
 // SendMessage implements the adapter port using internal user ID -> Telegram ID mapping via repo.
 func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, tgID int64, text string) error {
 	msg := tgbotapi.NewMessage(tgID, text)
@@ -247,7 +331,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 		if err != nil {
 			text = "Failed to get status."
 		}
-		return r.SendMessage(ctx, int64(tgUser.ID), text)
+		return r.sendMainMenu(ctx, int64(tgUser.ID), text)
 
 	case "/balance":
 		text, err := r.facade.HandleBalance(ctx, int64(tgUser.ID))
@@ -318,98 +402,39 @@ func (r *RealTelegramBotAdapter) handleQuery(ctx context.Context, query *tgbotap
 		return errors.New("invalid callback query")
 	}
 
-	cq := query
-	data := strings.TrimSpace(cq.Data)
+	// Stop telegram spinner when we return
+	defer func() { _, _ = r.bot.Request(tgbotapi.NewCallback(query.ID, "")) }()
 
-	// pick the correct chat ID (private chats: message chat id == user id)
 	var chatID int64
-	if cq.Message != nil && cq.Message.Chat != nil {
-		chatID = cq.Message.Chat.ID
-	} else if cq.From != nil {
-		chatID = int64(cq.From.ID)
+	if query.Message != nil && query.Message.Chat != nil {
+		chatID = query.Message.Chat.ID
+	} else {
+		chatID = int64(query.From.ID)
+	}
+	if chatID == 0 {
+		return nil
 	}
 
-	// Stop telegram spinner
-	defer func() {
-		_, _ = r.bot.Request(tgbotapi.NewCallback(cq.ID, ""))
-	}()
+	data := strings.TrimSpace(query.Data)
 
-	// Simple callback rate limit
+	// Rate limit for callbacks
 	if r.rateLimiter != nil {
-		allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(chatID, "cb:"+data), 30, time.Minute)
-		if err != nil {
-			log.Printf("rate limit error: %v", err)
-		} else if !allowed {
+		if allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(chatID, "cb:"+data), 30, time.Minute); err == nil && !allowed {
 			return r.SendMessage(ctx, chatID, "Rate limit exceeded. Please try again later.")
 		}
 	}
 
-	switch {
-	case data == "cmd:plans":
-		return r.sendPlansMenu(ctx, chatID)
-
-	case strings.HasPrefix(data, "buy:"):
-		planID := strings.TrimPrefix(data, "buy:")
-		_ = r.SendMessage(ctx, query.From.ID, "در حال پردازش درخواست شما هستیم...")
-		text, err := r.facade.HandleSubscribe(ctx, chatID, planID)
-		if err != nil {
-			text = "Failed to initiate payment."
-		}
-		// Try to extract the StartPay URL and present a button
-		if url := extractFirstURL(text); url != "" {
-			rows := [][]adapter.InlineButton{
-				{{Text: "Pay now", URL: url}},
-			}
-			return r.SendButtons(ctx, chatID, text, rows)
-		}
-		return r.SendMessage(ctx, chatID, text)
-
-	case data == "cmd:status":
-		text, err := r.facade.HandleStatus(ctx, chatID)
-		if err != nil {
-			text = "Failed to get status."
-		}
-		return r.SendMessage(ctx, chatID, text)
-
-	case data == "cmd:chat":
-		return r.sendModelMenu(ctx, chatID)
-
-	case strings.HasPrefix(data, "chat:"):
-		model := strings.TrimPrefix(data, "chat:")
-		text, err := r.facade.HandleStartChat(ctx, chatID, model)
-		if err != nil {
-			if errors.Is(err, domain.ErrActiveChatExists) {
-				text = "You already have an active chat session."
-			} else {
-				text = "Failed to start chat."
-			}
-		}
-		if err := r.SendMessage(ctx, chatID, text); err != nil {
-			return err
-		}
-		// Show End Chat button after starting chat
-		return r.sendEndChatButton(ctx, chatID)
-
-	case data == "cmd:bye":
-		// Resolve internal user by Telegram ID
-		user, err := r.facade.UserUC.GetByTelegramID(ctx, chatID)
-		if err != nil || user == nil {
-			return r.SendMessage(ctx, chatID, "No user found. Try /start first.")
-		}
-		// Find active session
-		sess, err := r.facade.ChatUC.FindActiveSession(ctx, user.ID)
-		if err != nil || sess == nil {
-			return r.SendMessage(ctx, chatID, "No active chat session found.")
-		}
-		text, err := r.facade.HandleEndChat(ctx, chatID, sess.ID)
-		if err != nil {
-			text = "Failed to end chat."
-		}
-		return r.SendMessage(ctx, chatID, text)
-	default:
-		// unknown callback → ignore
-		return errors.New("unknown callback data")
+	// Exact matches
+	if fn, ok := r.cbRoutes()[data]; ok {
+		return fn(ctx, chatID, data)
 	}
+	// Prefix matches
+	for _, pr := range r.cbPrefixRoutes() {
+		if strings.HasPrefix(data, pr.Prefix) {
+			return pr.Fn(ctx, chatID, data)
+		}
+	}
+	return errors.New("unknown callback data")
 }
 
 // sendMainMenu shows the main actions as inline buttons.
@@ -451,6 +476,7 @@ func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID i
 		}
 		rows = append(rows, []adapter.InlineButton{{Text: label, Data: "buy:" + p.ID}})
 	}
+	rows = append(rows, []adapter.InlineButton{{Text: "◀️ Menu", Data: "cmd:menu"}})
 	return r.SendButtons(ctx, telegramID, "Available plans (tap to buy):", rows)
 }
 
@@ -465,6 +491,8 @@ func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID i
 	for _, m := range models {
 		rows = append(rows, []adapter.InlineButton{{Text: m, Data: "chat:" + m}})
 	}
+
+	rows = append(rows, []adapter.InlineButton{{Text: "◀️ Menu", Data: "cmd:menu"}})
 	return r.SendButtons(ctx, telegramID, "Choose a model:", rows)
 }
 
@@ -472,6 +500,7 @@ func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID i
 func (r *RealTelegramBotAdapter) sendEndChatButton(ctx context.Context, telegramID int64) error {
 	rows := [][]adapter.InlineButton{
 		{{Text: "⏹ End Chat", Data: "cmd:bye"}},
+		{{Text: "◀️ Menu", Data: "cmd:menu"}},
 	}
 	return r.SendButtons(ctx, telegramID, "Chat started. Type your message, or tap to end:", rows)
 }
