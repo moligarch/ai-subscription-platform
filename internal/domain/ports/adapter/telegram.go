@@ -3,7 +3,11 @@ package adapter
 
 import "context"
 
-type InlineButton struct{ Text, Data string }
+type InlineButton struct {
+	Text string
+	Data string
+	URL  string
+}
 
 type TelegramBotAdapter interface {
 	SendMessage(ctx context.Context, telegramID int64, text string) error
