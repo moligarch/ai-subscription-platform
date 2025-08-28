@@ -103,9 +103,25 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 		return "", domain.ErrInvalidArgument
 	}
 
-	// --- Phase A: pre-send affordability check (pricing/balance only here) ---
-	var pricing *model.ModelPricing
-	var balanceMicros int64
+	// Provider "guess" (for logging only; no behavior change)
+	providerGuess := func(m string) string {
+		l := strings.ToLower(m)
+		if strings.HasPrefix(l, "gpt-") {
+			return "openai"
+		}
+		if strings.HasPrefix(l, "gemini") {
+			return "gemini"
+		}
+		return "default"
+	}(s.Model)
+
+	// ---------- Phase A: pre-send affordability check + pre-token count ----------
+	var (
+		pricing       *model.ModelPricing
+		balanceMicros int64
+		promptTokens  int // saved on the user message
+	)
+
 	if !c.devMode {
 		active, err := c.subs.GetActive(ctx, s.UserID)
 		if err != nil {
@@ -117,41 +133,65 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 		if active == nil {
 			return "❌ You don't have an active subscription. Use /plans to get started.", nil
 		}
-		balanceMicros = active.RemainingCredits // BIGINT micro-credits
+		balanceMicros = active.RemainingCredits
 
 		pr, err := c.prices.GetByModelName(ctx, s.Model)
 		if err != nil {
 			return "⚠️ Pricing for this model is not configured yet. Please try later or choose another model.", nil
 		}
 		pricing = pr
-	}
 
-	// --- Persist user message (unchanged) ---
-	s.AddMessage("user", userMessage, 0)
-	if err := c.sessions.SaveMessage(ctx, nil, &s.Messages[len(s.Messages)-1]); err != nil {
-		return "", err
-	}
+		// Build history INCLUDING this new user message (but don't persist yet).
+		msgsHist := s.GetRecentMessages(15)
+		adapterMsgs := make([]adapter.Message, 0, len(msgsHist)+1)
+		for _, m := range msgsHist {
+			adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
+		}
+		adapterMsgs = append(adapterMsgs, adapter.Message{Role: "user", Content: userMessage})
 
-	// --- Prepare AI context (unchanged) ---
-	msgs := s.GetRecentMessages(15)
-	adapterMsgs := make([]adapter.Message, 0, len(msgs))
-	for _, m := range msgs {
-		adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
-	}
-
-	// --- Accurate pre-check using provider CountTokens on the final prompt ---
-	if !c.devMode && pricing != nil {
-		promptTokens, err := c.ai.CountTokens(ctx, s.Model, adapterMsgs)
-		if err != nil {
-			// Conservative local fallback: ~4 chars/token on just the last user message
+		// Count tokens for the full prompt we would send.
+		preStart := time.Now()
+		if n, err := c.ai.CountTokens(ctx, s.Model, adapterMsgs); err == nil {
+			promptTokens = n
+		} else {
+			// Fallback: rough estimate on the new text (~4 chars/token).
 			rl := len([]rune(userMessage))
 			if rl < 0 {
 				rl = 0
 			}
 			promptTokens = rl/4 + 1
+			c.log.Warn().
+				Str("event", "chat.precheck").
+				Str("user_id", s.UserID).
+				Str("session_id", s.ID).
+				Str("model", s.Model).
+				Str("provider_guess", providerGuess).
+				Str("action", "proceed_no_count").
+				Err(err).
+				Int("latency_ms", int(time.Since(preStart)/time.Millisecond)).
+				Msg("CountTokens failed; proceeding with heuristic")
 		}
+
 		requiredMicros := int64(promptTokens) * pricing.InputTokenPriceMicros
+		action := "proceed"
 		if requiredMicros > balanceMicros {
+			action = "block"
+		}
+
+		// Structured pre-check log
+		c.log.Info().
+			Str("event", "chat.precheck").
+			Str("user_id", s.UserID).
+			Str("session_id", s.ID).
+			Str("model", s.Model).
+			Str("provider_guess", providerGuess).
+			Int("prompt_tokens_est", promptTokens).
+			Int64("required_micro", requiredMicros).
+			Int64("balance_micro", balanceMicros).
+			Str("action", action).
+			Msg("")
+
+		if action == "block" {
 			return fmt.Sprintf(
 				"⚠️ Insufficient balance.\nCurrent: %d µcr\nRequired for this message: %d µcr\n\nTip: try a shorter message or /plans to top up.",
 				balanceMicros, requiredMicros,
@@ -159,23 +199,38 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 		}
 	}
 
-	// --- Call AI with usage ---
+	// ---------- Persist user message (store pre-count tokens) ----------
+	s.AddMessage("user", userMessage, promptTokens)
+	if err := c.sessions.SaveMessage(ctx, nil, &s.Messages[len(s.Messages)-1]); err != nil {
+		return "", err
+	}
+
+	// ---------- Prepare AI context (now includes the just-saved user message) ----------
+	msgs := s.GetRecentMessages(15)
+	adapterMsgs := make([]adapter.Message, 0, len(msgs))
+	for _, m := range msgs {
+		adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
+	}
+
+	// ---------- Call AI and get precise usage ----------
+	callStart := time.Now()
 	reply, usage, err := c.ai.ChatWithUsage(ctx, s.Model, adapterMsgs)
 	if err != nil {
 		return "", err
 	}
 
-	// --- Persist assistant message (unchanged) ---
-	s.AddMessage("assistant", reply, 0)
+	// ---------- Persist assistant message with completion tokens ----------
+	s.AddMessage("assistant", reply, usage.CompletionTokens)
 	if err := c.sessions.SaveMessage(ctx, nil, &s.Messages[len(s.Messages)-1]); err != nil {
 		return "", err
 	}
 	s.UpdatedAt = time.Now()
 	_ = c.sessions.Save(ctx, nil, s)
 
-	// --- Post-call: exact deduction based on provider usage ---
+	// ---------- Post-call: exact deduction based on usage + structured log ----------
+	var spent int64
 	if !c.devMode && pricing != nil {
-		spent := int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
+		spent = int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
 			int64(usage.CompletionTokens)*pricing.OutputTokenPriceMicros
 		if spent > 0 {
 			if _, derr := c.subs.DeductCredits(ctx, s.UserID, spent); derr != nil {
@@ -183,6 +238,19 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 			}
 		}
 	}
+
+	c.log.Info().
+		Str("event", "chat.usage").
+		Str("user_id", s.UserID).
+		Str("session_id", s.ID).
+		Str("model", s.Model).
+		Str("provider_guess", providerGuess).
+		Int("tokens_in", usage.PromptTokens).
+		Int("tokens_out", usage.CompletionTokens).
+		Int("tokens_total", usage.TotalTokens).
+		Int64("cost_micro", spent).
+		Int("latency_ms", int(time.Since(callStart)/time.Millisecond)).
+		Msg("")
 
 	return reply, nil
 }
