@@ -78,6 +78,20 @@ CREATE INDEX IF NOT EXISTS idx_user_subscriptions_scheduled_start
   ON user_subscriptions(scheduled_start_at);
 
 -- =============================================================
+-- MODEL PRICING
+-- =============================================================
+DROP TABLE IF EXISTS model_pricing CASCADE;
+CREATE TABLE model_pricing (
+  id                         UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  model_name                 TEXT         UNIQUE NOT NULL,    -- e.g., 'gpt-4o-mini'
+  input_token_price_micros   BIGINT       NOT NULL,           -- price per input token (micro-credits)
+  output_token_price_micros  BIGINT       NOT NULL,           -- price per output token (micro-credits)
+  active                     BOOLEAN      NOT NULL DEFAULT TRUE,
+  created_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at                 TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- =============================================================
 -- PAYMENTS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS payments (
