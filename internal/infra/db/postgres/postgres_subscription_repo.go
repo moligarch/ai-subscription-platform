@@ -137,9 +137,9 @@ SELECT plan_id, COUNT(*)
 	return m, rows.Err()
 }
 
-func (r *PostgresSubscriptionRepo) TotalRemainingCredits(ctx context.Context, qx any) (int, error) {
+func (r *PostgresSubscriptionRepo) TotalRemainingCredits(ctx context.Context, qx any) (int64, error) {
 	const q = `SELECT COALESCE(SUM(remaining_credits),0) FROM user_subscriptions WHERE status IN ('active','reserved');`
-	var n int
+	var n int64
 	row := pickRow(r.pool, qx, q)
 	if err := row.Scan(&n); err != nil {
 		return 0, fmt.Errorf("sum credits: %w", err)

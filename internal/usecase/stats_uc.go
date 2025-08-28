@@ -11,7 +11,7 @@ import (
 var _ StatsUseCase = (*statsUC)(nil)
 
 type StatsUseCase interface {
-	Totals(ctx context.Context) (users int, activeByPlan map[string]int, remainingCredits int, err error)
+	Totals(ctx context.Context) (users int, activeByPlan map[string]int, remainingCredits int64, err error)
 	Revenue(ctx context.Context) (week int64, month int64, year int64, err error)
 	InactiveUsers(ctx context.Context, olderThan time.Time) (int, error)
 }
@@ -26,7 +26,7 @@ func NewStatsUseCase(users repository.UserRepository, subs repository.Subscripti
 	return &statsUC{users: users, subs: subs, payments: payments}
 }
 
-func (s *statsUC) Totals(ctx context.Context) (int, map[string]int, int, error) {
+func (s *statsUC) Totals(ctx context.Context) (int, map[string]int, int64, error) {
 	users, err := s.users.CountUsers(ctx, nil)
 	if err != nil {
 		return 0, nil, 0, err

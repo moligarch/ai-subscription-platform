@@ -17,7 +17,7 @@ type SubscriptionRepository interface {
 	FindByID(ctx context.Context, qx any, id string) (*model.UserSubscription, error)
 	FindExpiring(ctx context.Context, qx any, withinDays int) ([]*model.UserSubscription, error)
 	CountActiveByPlan(ctx context.Context, qx any) (map[string]int, error)
-	TotalRemainingCredits(ctx context.Context, qx any) (int, error)
+	TotalRemainingCredits(ctx context.Context, qx any) (int64, error)
 }
 
 // -----------------------------
