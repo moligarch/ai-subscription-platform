@@ -1,0 +1,1059 @@
+package usecase_test
+
+import (
+	"context"
+	"errors"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/google/uuid"
+
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
+)
+
+// -----------------------------
+// Utilities: tiny helpers
+// -----------------------------
+
+func now() time.Time { return time.Now().Truncate(time.Millisecond) }
+
+func cloneMessages(ms []*model.ChatMessage) []model.ChatMessage {
+	out := make([]model.ChatMessage, len(ms))
+	for i, m := range ms {
+		out[i] = *m
+	}
+	return out
+}
+
+// =============================
+// Adapters
+// =============================
+
+// ---- Mock TelegramBotAdapter ----
+
+type MockTelegramBot struct {
+	mu   sync.Mutex
+	Sent []struct {
+		ID   int64
+		Text string
+	}
+	SentBtns []struct {
+		ID   int64
+		Text string
+		Rows [][]adapter.InlineButton
+	}
+
+	SendMessageFunc func(ctx context.Context, telegramID int64, text string) error
+	SendButtonsFunc func(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error
+}
+
+var _ adapter.TelegramBotAdapter = (*MockTelegramBot)(nil)
+
+func (m *MockTelegramBot) SendMessage(ctx context.Context, telegramID int64, text string) error {
+	if m.SendMessageFunc != nil {
+		return m.SendMessageFunc(ctx, telegramID, text)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.Sent = append(m.Sent, struct {
+		ID   int64
+		Text string
+	}{telegramID, text})
+	return nil
+}
+
+func (m *MockTelegramBot) SendButtons(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error {
+	if m.SendButtonsFunc != nil {
+		return m.SendButtonsFunc(ctx, telegramID, text, rows)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.SentBtns = append(m.SentBtns, struct {
+		ID   int64
+		Text string
+		Rows [][]adapter.InlineButton
+	}{telegramID, text, rows})
+	return nil
+}
+
+// ---- Mock AIServiceAdapter ----
+
+type MockAI struct {
+	mu sync.Mutex
+
+	// configurable behavior
+	ListModelsFunc    func(ctx context.Context) ([]string, error)
+	GetModelInfoFunc  func(modelName string) (adapter.ModelInfo, error)
+	CountTokensFunc   func(ctx context.Context, model string, msgs []adapter.Message) (int, error)
+	ChatFunc          func(ctx context.Context, model string, msgs []adapter.Message) (string, error)
+	ChatWithUsageFunc func(ctx context.Context, model string, msgs []adapter.Message) (string, adapter.Usage, error)
+
+	// tracing of invocations
+	Calls struct {
+		ListModels int
+		ModelInfo  []string
+		Count      []struct {
+			Model string
+			N     int
+		}
+		Chat []string
+	}
+}
+
+var _ adapter.AIServiceAdapter = (*MockAI)(nil)
+
+func (m *MockAI) ListModels(ctx context.Context) ([]string, error) {
+	m.mu.Lock()
+	m.Calls.ListModels++
+	m.mu.Unlock()
+	if m.ListModelsFunc != nil {
+		return m.ListModelsFunc(ctx)
+	}
+	return []string{"gpt-4o-mini"}, nil
+}
+
+func (m *MockAI) GetModelInfo(model string) (adapter.ModelInfo, error) {
+	m.mu.Lock()
+	m.Calls.ModelInfo = append(m.Calls.ModelInfo, model)
+	m.mu.Unlock()
+	if m.GetModelInfoFunc != nil {
+		return m.GetModelInfoFunc(model)
+	}
+	return adapter.ModelInfo{Name: model, MaxTokens: 0}, nil
+}
+
+func (m *MockAI) CountTokens(ctx context.Context, model string, msgs []adapter.Message) (int, error) {
+	if m.CountTokensFunc != nil {
+		return m.CountTokensFunc(ctx, model, msgs)
+	}
+	n := 0
+	for _, x := range msgs {
+		n += len(x.Content)
+	} // dumb baseline
+	m.mu.Lock()
+	m.Calls.Count = append(m.Calls.Count, struct {
+		Model string
+		N     int
+	}{model, n})
+	m.mu.Unlock()
+	return n, nil
+}
+
+func (m *MockAI) Chat(ctx context.Context, model string, msgs []adapter.Message) (string, error) {
+	if m.ChatFunc != nil {
+		return m.ChatFunc(ctx, model, msgs)
+	}
+	return "ok", nil
+}
+
+func (m *MockAI) ChatWithUsage(ctx context.Context, model string, msgs []adapter.Message) (string, adapter.Usage, error) {
+	if m.ChatWithUsageFunc != nil {
+		return m.ChatWithUsageFunc(ctx, model, msgs)
+	}
+	return "ok", adapter.Usage{TotalTokens: 1, PromptTokens: 1, CompletionTokens: 0}, nil
+}
+
+// ---- Mock PaymentGateway (adapter) ----
+
+type MockPaymentGateway struct {
+	NameVal string
+
+	RequestPaymentFunc func(ctx context.Context, amount int64, description, callbackURL string, meta map[string]interface{}) (authority, payURL string, err error)
+	VerifyPaymentFunc  func(ctx context.Context, authority string, expectedAmount int64) (refID string, err error)
+	RefundPaymentFunc  func(ctx context.Context, sessionID string, amount int64, description string, method adapter.RefundMethod, reason adapter.RefundReason) (adapter.RefundResult, error)
+}
+
+var _ adapter.PaymentGateway = (*MockPaymentGateway)(nil)
+
+func (m *MockPaymentGateway) Name() string {
+	if m.NameVal == "" {
+		return "mockpay"
+	}
+	return m.NameVal
+}
+
+func (m *MockPaymentGateway) RequestPayment(ctx context.Context, amount int64, description, callbackURL string, meta map[string]interface{}) (string, string, error) {
+	if m.RequestPaymentFunc != nil {
+		return m.RequestPaymentFunc(ctx, amount, description, callbackURL, meta)
+	}
+	auth := "AUTH-" + uuid.NewString()
+	return auth, "https://pay.example/" + auth, nil
+}
+
+func (m *MockPaymentGateway) VerifyPayment(ctx context.Context, authority string, expectedAmount int64) (string, error) {
+	if m.VerifyPaymentFunc != nil {
+		return m.VerifyPaymentFunc(ctx, authority, expectedAmount)
+	}
+	return "REF-" + authority, nil
+}
+
+func (m *MockPaymentGateway) RefundPayment(ctx context.Context, sessionID string, amount int64, description string, method adapter.RefundMethod, reason adapter.RefundReason) (adapter.RefundResult, error) {
+	if m.RefundPaymentFunc != nil {
+		return m.RefundPaymentFunc(ctx, sessionID, amount, description, method, reason)
+	}
+	return adapter.RefundResult{ID: "R-" + sessionID, Status: "DONE", RefundAmount: amount, RefundTime: now()}, nil
+}
+
+// =============================
+// Repositories
+// =============================
+
+// ---- Mock UserRepository ----
+
+type MockUserRepo struct {
+	mu   sync.Mutex
+	byID map[string]*model.User
+	byTG map[int64]*model.User
+
+	SaveFunc               func(ctx context.Context, qx any, u *model.User) error
+	FindByTelegramIDFunc   func(ctx context.Context, qx any, tgID int64) (*model.User, error)
+	FindByIDFunc           func(ctx context.Context, qx any, id string) (*model.User, error)
+	CountUsersFunc         func(ctx context.Context, qx any) (int, error)
+	CountInactiveUsersFunc func(ctx context.Context, qx any, olderThan time.Time) (int, error)
+}
+
+var _ repository.UserRepository = (*MockUserRepo)(nil)
+
+func NewMockUserRepo() *MockUserRepo {
+	return &MockUserRepo{byID: map[string]*model.User{}, byTG: map[int64]*model.User{}}
+}
+
+func (r *MockUserRepo) Save(ctx context.Context, qx any, u *model.User) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, qx, u)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u.ID == "" {
+		u.ID = uuid.NewString()
+	}
+	u.LastActiveAt = now()
+	cp := *u
+	r.byID[u.ID] = &cp
+	r.byTG[u.TelegramID] = &cp
+	return nil
+}
+
+func (r *MockUserRepo) FindByTelegramID(ctx context.Context, qx any, tgID int64) (*model.User, error) {
+	if r.FindByTelegramIDFunc != nil {
+		return r.FindByTelegramIDFunc(ctx, qx, tgID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u, ok := r.byTG[tgID]; ok {
+		cp := *u
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockUserRepo) FindByID(ctx context.Context, qx any, id string) (*model.User, error) {
+	if r.FindByIDFunc != nil {
+		return r.FindByIDFunc(ctx, qx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if u, ok := r.byID[id]; ok {
+		cp := *u
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockUserRepo) CountUsers(ctx context.Context, qx any) (int, error) {
+	if r.CountUsersFunc != nil {
+		return r.CountUsersFunc(ctx, qx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byID), nil
+}
+
+func (r *MockUserRepo) CountInactiveUsers(ctx context.Context, qx any, olderThan time.Time) (int, error) {
+	if r.CountInactiveUsersFunc != nil {
+		return r.CountInactiveUsersFunc(ctx, qx, olderThan)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, u := range r.byID {
+		if u.LastActiveAt.Before(olderThan) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// ---- Mock SubscriptionPlanRepository ----
+
+type MockPlanRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.SubscriptionPlan
+
+	SaveFunc     func(ctx context.Context, p *model.SubscriptionPlan) error
+	FindByIDFunc func(ctx context.Context, id string) (*model.SubscriptionPlan, error)
+	ListAllFunc  func(ctx context.Context) ([]*model.SubscriptionPlan, error)
+	DeleteFunc   func(ctx context.Context, id string) error
+}
+
+var _ repository.SubscriptionPlanRepository = (*MockPlanRepo)(nil)
+
+func NewMockPlanRepo() *MockPlanRepo {
+	return &MockPlanRepo{data: map[string]*model.SubscriptionPlan{}}
+}
+
+func (r *MockPlanRepo) Save(ctx context.Context, p *model.SubscriptionPlan) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, p)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	cp := *p
+	r.data[p.ID] = &cp
+	return nil
+}
+
+func (r *MockPlanRepo) FindByID(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+	if r.FindByIDFunc != nil {
+		return r.FindByIDFunc(ctx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.data[id]; ok {
+		cp := *p
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockPlanRepo) ListAll(ctx context.Context) ([]*model.SubscriptionPlan, error) {
+	if r.ListAllFunc != nil {
+		return r.ListAllFunc(ctx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*model.SubscriptionPlan, 0, len(r.data))
+	for _, p := range r.data {
+		cp := *p
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].PriceIRR < out[j].PriceIRR })
+	return out, nil
+}
+
+func (r *MockPlanRepo) Delete(ctx context.Context, id string) error {
+	if r.DeleteFunc != nil {
+		return r.DeleteFunc(ctx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.data, id)
+	return nil
+}
+
+// ---- Mock SubscriptionRepository ----
+
+type MockSubscriptionRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.UserSubscription // by id
+
+	SaveFunc                    func(ctx context.Context, qx any, s *model.UserSubscription) error
+	FindActiveByUserAndPlanFunc func(ctx context.Context, qx any, userID, planID string) (*model.UserSubscription, error)
+	FindActiveByUserFunc        func(ctx context.Context, qx any, userID string) (*model.UserSubscription, error)
+	FindReservedByUserFunc      func(ctx context.Context, qx any, userID string) ([]*model.UserSubscription, error)
+	FindByIDFunc                func(ctx context.Context, qx any, id string) (*model.UserSubscription, error)
+	FindExpiringFunc            func(ctx context.Context, qx any, within int) ([]*model.UserSubscription, error)
+	CountActiveByPlanFunc       func(ctx context.Context, qx any) (map[string]int, error)
+	TotalRemainingCreditsFunc   func(ctx context.Context, qx any) (int64, error)
+	UpdateRemainingCreditsFunc  func(ctx context.Context, qx any, id string, delta int64) error
+	UpdateStatusFunc            func(ctx context.Context, qx any, id string, status model.SubscriptionStatus) error
+}
+
+var _ repository.SubscriptionRepository = (*MockSubscriptionRepo)(nil)
+
+func NewMockSubscriptionRepo() *MockSubscriptionRepo {
+	return &MockSubscriptionRepo{data: map[string]*model.UserSubscription{}}
+}
+
+func (r *MockSubscriptionRepo) Save(ctx context.Context, qx any, s *model.UserSubscription) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, qx, s)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.ID == "" {
+		s.ID = uuid.NewString()
+	}
+	cp := *s
+	r.data[s.ID] = &cp
+	return nil
+}
+
+func (r *MockSubscriptionRepo) FindActiveByUserAndPlan(ctx context.Context, qx any, userID, planID string) (*model.UserSubscription, error) {
+	if r.FindActiveByUserAndPlanFunc != nil {
+		return r.FindActiveByUserAndPlanFunc(ctx, qx, userID, planID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.data {
+		if s.UserID == userID && s.PlanID == planID && s.Status == model.SubscriptionStatusActive {
+			cp := *s
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (r *MockSubscriptionRepo) FindActiveByUser(ctx context.Context, qx any, userID string) (*model.UserSubscription, error) {
+	if r.FindActiveByUserFunc != nil {
+		return r.FindActiveByUserFunc(ctx, qx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.data {
+		if s.UserID == userID && s.Status == model.SubscriptionStatusActive {
+			cp := *s
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (r *MockSubscriptionRepo) FindReservedByUser(ctx context.Context, qx any, userID string) ([]*model.UserSubscription, error) {
+	if r.FindReservedByUserFunc != nil {
+		return r.FindReservedByUserFunc(ctx, qx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.UserSubscription
+	for _, s := range r.data {
+		if s.UserID == userID && s.Status == model.SubscriptionStatusReserved {
+			cp := *s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (r *MockSubscriptionRepo) FindByID(ctx context.Context, qx any, id string) (*model.UserSubscription, error) {
+	if r.FindByIDFunc != nil {
+		return r.FindByIDFunc(ctx, qx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.data[id]; ok {
+		cp := *s
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+// Replace the existing FindExpiring with this
+func (r *MockSubscriptionRepo) FindExpiring(ctx context.Context, qx any, withinDays int) ([]*model.UserSubscription, error) {
+	if r.FindExpiringFunc != nil {
+		return r.FindExpiringFunc(ctx, qx, withinDays)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	deadline := now().AddDate(0, 0, withinDays)
+	var out []*model.UserSubscription
+	for _, s := range r.data {
+		if s.Status == model.SubscriptionStatusActive && s.ExpiresAt != nil && s.ExpiresAt.Before(deadline) {
+			cp := *s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+func (r *MockSubscriptionRepo) CountActiveByPlan(ctx context.Context, qx any) (map[string]int, error) {
+	if r.CountActiveByPlanFunc != nil {
+		return r.CountActiveByPlanFunc(ctx, qx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	res := map[string]int{}
+	for _, s := range r.data {
+		if s.Status == model.SubscriptionStatusActive {
+			res[s.PlanID]++
+		}
+	}
+	return res, nil
+}
+
+func (r *MockSubscriptionRepo) TotalRemainingCredits(ctx context.Context, qx any) (int64, error) {
+	if r.TotalRemainingCreditsFunc != nil {
+		return r.TotalRemainingCreditsFunc(ctx, qx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var t int64
+	for _, s := range r.data {
+		if s.Status == model.SubscriptionStatusActive {
+			t += s.RemainingCredits
+		}
+	}
+	return t, nil
+}
+
+func (r *MockSubscriptionRepo) UpdateRemainingCredits(ctx context.Context, qx any, id string, delta int64) error {
+	if r.UpdateRemainingCreditsFunc != nil {
+		return r.UpdateRemainingCreditsFunc(ctx, qx, id, delta)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.data[id]; ok {
+		s.RemainingCredits += delta
+		if s.RemainingCredits < 0 {
+			s.RemainingCredits = 0
+		}
+		return nil
+	}
+	return errors.New("not found")
+}
+
+func (r *MockSubscriptionRepo) UpdateStatus(ctx context.Context, qx any, id string, status model.SubscriptionStatus) error {
+	if r.UpdateStatusFunc != nil {
+		return r.UpdateStatusFunc(ctx, qx, id, status)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.data[id]; ok {
+		s.Status = status
+		return nil
+	}
+	return errors.New("not found")
+}
+
+// ---- Mock PaymentRepository ----
+
+type MockPaymentRepo struct {
+	mu     sync.Mutex
+	data   map[string]*model.Payment // by id
+	byAuth map[string]string         // authority -> id
+
+	SaveFunc                  func(ctx context.Context, qx any, p *model.Payment) error
+	FindByIDFunc              func(ctx context.Context, qx any, id string) (*model.Payment, error)
+	FindByAuthorityFunc       func(ctx context.Context, qx any, authority string) (*model.Payment, error)
+	UpdateStatusIfPendingFunc func(ctx context.Context, qx any, id string, newStatus model.PaymentStatus) (bool, error)
+	UpdateStatusFunc          func(ctx context.Context, qx any, id string, newStatus model.PaymentStatus) error
+	SumByPeriodFunc           func(ctx context.Context, qx any, period string) (int64, error)
+	SetActivationCodeFunc     func(ctx context.Context, qx any, id, code string) error
+	FindByActivationCodeFunc  func(ctx context.Context, qx any, code string) (*model.Payment, error)
+	ListPendingOlderThanFunc  func(ctx context.Context, qx any, olderThan time.Time) ([]*model.Payment, error)
+}
+
+var _ repository.PaymentRepository = (*MockPaymentRepo)(nil)
+
+func NewMockPaymentRepo() *MockPaymentRepo {
+	return &MockPaymentRepo{data: map[string]*model.Payment{}, byAuth: map[string]string{}}
+}
+
+func (r *MockPaymentRepo) Save(ctx context.Context, qx any, p *model.Payment) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, qx, p)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	cp := *p
+	r.data[p.ID] = &cp
+	if p.Authority != "" {
+		r.byAuth[p.Authority] = p.ID
+	}
+	return nil
+}
+
+func (r *MockPaymentRepo) FindByID(ctx context.Context, qx any, id string) (*model.Payment, error) {
+	if r.FindByIDFunc != nil {
+		return r.FindByIDFunc(ctx, qx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.data[id]; ok {
+		cp := *p
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockPaymentRepo) FindByAuthority(ctx context.Context, qx any, authority string) (*model.Payment, error) {
+	if r.FindByAuthorityFunc != nil {
+		return r.FindByAuthorityFunc(ctx, qx, authority)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if id, ok := r.byAuth[authority]; ok {
+		cp := *r.data[id]
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockPaymentRepo) UpdateStatus(ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) error {
+	if r.UpdateStatusFunc != nil {
+		return r.UpdateStatusFunc(ctx, qx, id, status)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.data[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	p.Status = status
+	// optional: if your Payment model has RefID/PaidAt fields, set them here when non-nil
+	return nil
+}
+
+func (r *MockPaymentRepo) UpdateStatusIfPending(ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error) {
+	if r.UpdateStatusIfPendingFunc != nil {
+		return r.UpdateStatusIfPendingFunc(ctx, qx, id, status)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.data[id]
+	if !ok {
+		return false, errors.New("not found")
+	}
+	cur := strings.ToLower(string(p.Status))
+	if cur != "pending" && cur != "initiated" {
+		return false, nil
+	}
+	p.Status = status
+	// optional set refID/paidAt if your model has them
+	return true, nil
+}
+
+func (r *MockPaymentRepo) ListPendingOlderThan(ctx context.Context, qx any, olderThan time.Time, limit int) ([]*model.Payment, error) {
+	if r.ListPendingOlderThanFunc != nil {
+		return r.ListPendingOlderThanFunc(ctx, qx, olderThan)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.Payment
+	for _, p := range r.data {
+		if strings.ToLower(string(p.Status)) == "pending" && p.CreatedAt.Before(olderThan) {
+			cp := *p
+			out = append(out, &cp)
+			if limit > 0 && len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+func (r *MockPaymentRepo) SetActivationCode(ctx context.Context, qx any, id, code string, expiresAt time.Time) error {
+	if r.SetActivationCodeFunc != nil {
+		return r.SetActivationCodeFunc(ctx, qx, id, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	p, ok := r.data[id]
+	if !ok {
+		return errors.New("not found")
+	}
+	p.ActivationCode = &code
+	// you can store expiresAt in your model if a field exists; mock ignores it safely
+	return nil
+}
+
+func (r *MockPaymentRepo) SumByPeriod(ctx context.Context, qx any, period string) (int64, error) {
+	if r.SumByPeriodFunc != nil {
+		return r.SumByPeriodFunc(ctx, qx, period)
+	}
+	// naive total sum as default
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var sum int64
+	for _, p := range r.data {
+		sum += p.Amount
+	}
+	return sum, nil
+}
+
+func (r *MockPaymentRepo) FindByActivationCode(ctx context.Context, qx any, code string) (*model.Payment, error) {
+	if r.FindByActivationCodeFunc != nil {
+		return r.FindByActivationCodeFunc(ctx, qx, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, p := range r.data {
+		if *p.ActivationCode == code {
+			cp := *p
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+// ---- Mock PurchaseRepository ----
+
+type MockPurchaseRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.Purchase
+
+	SaveFunc       func(ctx context.Context, qx any, pur *model.Purchase) error
+	ListByUserFunc func(ctx context.Context, qx any, userID string) ([]*model.Purchase, error)
+}
+
+var _ repository.PurchaseRepository = (*MockPurchaseRepo)(nil)
+
+func NewMockPurchaseRepo() *MockPurchaseRepo {
+	return &MockPurchaseRepo{data: map[string]*model.Purchase{}}
+}
+
+func (r *MockPurchaseRepo) Save(ctx context.Context, qx any, pur *model.Purchase) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, qx, pur)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if pur.ID == "" {
+		pur.ID = uuid.NewString()
+	}
+	cp := *pur
+	r.data[pur.ID] = &cp
+	return nil
+}
+
+func (r *MockPurchaseRepo) ListByUser(ctx context.Context, qx any, userID string) ([]*model.Purchase, error) {
+	if r.ListByUserFunc != nil {
+		return r.ListByUserFunc(ctx, qx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.Purchase
+	for _, p := range r.data {
+		if p.UserID == userID {
+			cp := *p
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
+// ---- Mock ModelPricingRepository ----
+
+type MockModelPricingRepo struct {
+	mu      sync.Mutex
+	byModel map[string]*model.ModelPricing
+
+	GetByModelNameFunc func(ctx context.Context, model string) (*model.ModelPricing, error)
+	ListActiveFunc     func(ctx context.Context) ([]*model.ModelPricing, error)
+	SaveFunc           func(ctx context.Context, p *model.ModelPricing) error
+}
+
+var _ repository.ModelPricingRepository = (*MockModelPricingRepo)(nil)
+
+func NewMockModelPricingRepo() *MockModelPricingRepo {
+	return &MockModelPricingRepo{byModel: map[string]*model.ModelPricing{}}
+}
+
+func (r *MockModelPricingRepo) Seed(mp *model.ModelPricing) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *mp
+	r.byModel[strings.ToLower(mp.ModelName)] = &cp
+}
+
+func (r *MockModelPricingRepo) GetByModelName(ctx context.Context, model string) (*model.ModelPricing, error) {
+	if r.GetByModelNameFunc != nil {
+		return r.GetByModelNameFunc(ctx, model)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p, ok := r.byModel[strings.ToLower(model)]; ok {
+		cp := *p
+		return &cp, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func (r *MockModelPricingRepo) ListActive(ctx context.Context) ([]*model.ModelPricing, error) {
+	if r.ListActiveFunc != nil {
+		return r.ListActiveFunc(ctx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.ModelPricing
+	for _, p := range r.byModel {
+		if !p.Active {
+			continue
+		}
+		cp := *p
+		out = append(out, &cp)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ModelName < out[j].ModelName })
+	return out, nil
+}
+
+func (r *MockModelPricingRepo) Save(ctx context.Context, p *model.ModelPricing) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, p)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if p.ID == "" {
+		p.ID = uuid.NewString()
+	}
+	cp := *p
+	r.byModel[strings.ToLower(p.ModelName)] = &cp
+	return nil
+}
+
+// ---- Mock ChatSessionRepository ----
+
+type MockChatSessionRepo struct {
+	mu      sync.Mutex
+	byID    map[string]*model.ChatSession
+	msgByID map[string][]*model.ChatMessage // sessionID -> messages
+
+	SaveFunc               func(ctx context.Context, qx any, s *model.ChatSession) error
+	SaveMessageFunc        func(ctx context.Context, qx any, m *model.ChatMessage) error
+	DeleteFunc             func(ctx context.Context, qx any, id string) error
+	FindActiveByUserFunc   func(ctx context.Context, qx any, userID string) (*model.ChatSession, error)
+	FindByIDFunc           func(ctx context.Context, qx any, id string) (*model.ChatSession, error)
+	UpdateStatusFunc       func(ctx context.Context, qx any, sessionID string, status model.ChatSessionStatus) error
+	FindAllByUserFunc      func(ctx context.Context, qx any, userID string) ([]*model.ChatSession, error) // legacy
+	ListByUserFunc         func(ctx context.Context, qx any, userID string, offset, limit int) ([]*model.ChatSession, error)
+	CleanupOldMessagesFunc func(ctx context.Context, userID string, retentionDays int) (int64, error)
+}
+
+var _ repository.ChatSessionRepository = (*MockChatSessionRepo)(nil)
+
+func NewMockChatSessionRepo() *MockChatSessionRepo {
+	return &MockChatSessionRepo{byID: map[string]*model.ChatSession{}, msgByID: map[string][]*model.ChatMessage{}}
+}
+
+func (r *MockChatSessionRepo) Save(ctx context.Context, qx any, s *model.ChatSession) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, qx, s)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s.ID == "" {
+		s.ID = uuid.NewString()
+	}
+	cp := *s
+	r.byID[s.ID] = &cp
+	return nil
+}
+
+func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, qx any, m *model.ChatMessage) error {
+	if r.SaveMessageFunc != nil {
+		return r.SaveMessageFunc(ctx, qx, m)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cp := *m
+	r.msgByID[m.SessionID] = append(r.msgByID[m.SessionID], &cp)
+	return nil
+}
+
+func (r *MockChatSessionRepo) Delete(ctx context.Context, qx any, id string) error {
+	if r.DeleteFunc != nil {
+		return r.DeleteFunc(ctx, qx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byID, id)
+	delete(r.msgByID, id)
+	return nil
+}
+
+func (r *MockChatSessionRepo) FindActiveByUser(ctx context.Context, qx any, userID string) (*model.ChatSession, error) {
+	if r.FindActiveByUserFunc != nil {
+		return r.FindActiveByUserFunc(ctx, qx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.byID {
+		if s.UserID == userID && s.Status == model.ChatSessionActive {
+			cp := *s
+			cp.Messages = cloneMessages(r.msgByID[s.ID])
+			return &cp, nil
+		}
+	}
+	return nil, nil
+}
+
+func (r *MockChatSessionRepo) FindByID(ctx context.Context, qx any, id string) (*model.ChatSession, error) {
+	if r.FindByIDFunc != nil {
+		return r.FindByIDFunc(ctx, qx, id)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.byID[id]; ok {
+		cp := *s
+		cp.Messages = cloneMessages(r.msgByID[id])
+		return &cp, nil
+	}
+	return nil, nil
+}
+
+func (r *MockChatSessionRepo) UpdateStatus(ctx context.Context, qx any, sessionID string, status model.ChatSessionStatus) error {
+	if r.UpdateStatusFunc != nil {
+		return r.UpdateStatusFunc(ctx, qx, sessionID, status)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.byID[sessionID]; ok {
+		s.Status = status
+		s.UpdatedAt = now()
+		return nil
+	}
+	return errors.New("not found")
+}
+
+// Legacy interface: implement via ListByUser(…, 0, 0)
+func (r *MockChatSessionRepo) FindAllByUser(ctx context.Context, qx any, userID string) ([]*model.ChatSession, error) {
+	if r.FindAllByUserFunc != nil {
+		return r.FindAllByUserFunc(ctx, qx, userID)
+	}
+	return r.ListByUser(ctx, qx, userID, 0, 0)
+}
+
+func (r *MockChatSessionRepo) ListByUser(ctx context.Context, qx any, userID string, offset, limit int) ([]*model.ChatSession, error) {
+	if r.ListByUserFunc != nil {
+		return r.ListByUserFunc(ctx, qx, userID, offset, limit)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var all []*model.ChatSession
+	for _, s := range r.byID {
+		if s.UserID == userID {
+			cp := *s
+			cp.Messages = cloneMessages(r.msgByID[s.ID])
+			all = append(all, &cp)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].CreatedAt.After(all[j].CreatedAt) })
+	if offset > len(all) {
+		return []*model.ChatSession{}, nil
+	}
+	all = all[offset:]
+	if limit > 0 && limit < len(all) {
+		all = all[:limit]
+	}
+	return all, nil
+}
+
+func (r *MockChatSessionRepo) CleanupOldMessages(ctx context.Context, userID string, retentionDays int) (int64, error) {
+	if r.CleanupOldMessagesFunc != nil {
+		return r.CleanupOldMessagesFunc(ctx, userID, retentionDays)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// no-op for in-memory
+	return 0, nil
+}
+
+// ---- Mock NotificationLogRepository ----
+
+type MockNotificationLogRepo struct {
+	mu      sync.Mutex
+	entries map[string]map[int]struct{} // subscriptionID -> set(thresholdDays)
+
+	SaveExpiryFunc   func(ctx context.Context, qx any, subscriptionID, userID string, thresholdDays int) error
+	ExistsExpiryFunc func(ctx context.Context, qx any, subscriptionID string, thresholdDays int) (bool, error)
+}
+
+var _ repository.NotificationLogRepository = (*MockNotificationLogRepo)(nil)
+
+func NewMockNotificationLogRepo() *MockNotificationLogRepo {
+	return &MockNotificationLogRepo{
+		entries: make(map[string]map[int]struct{}),
+	}
+}
+
+func (r *MockNotificationLogRepo) SaveExpiry(ctx context.Context, qx any, subscriptionID, userID string, thresholdDays int) error {
+	if r.SaveExpiryFunc != nil {
+		return r.SaveExpiryFunc(ctx, qx, subscriptionID, userID, thresholdDays)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.entries[subscriptionID]; !ok {
+		r.entries[subscriptionID] = make(map[int]struct{})
+	}
+	r.entries[subscriptionID][thresholdDays] = struct{}{}
+	return nil
+}
+
+func (r *MockNotificationLogRepo) ExistsExpiry(ctx context.Context, qx any, subscriptionID string, thresholdDays int) (bool, error) {
+	if r.ExistsExpiryFunc != nil {
+		return r.ExistsExpiryFunc(ctx, qx, subscriptionID, thresholdDays)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if days, ok := r.entries[subscriptionID]; ok {
+		_, exists := days[thresholdDays]
+		return exists, nil
+	}
+	return false, nil
+}
+
+// =============================
+// Infra helpers for tests
+// =============================
+
+// ---- Mock TransactionManager ----
+
+type MockTxManager struct {
+	WithTxFunc func(ctx context.Context, fn func(ctx context.Context, qx any) error) error
+}
+
+var _ repository.TransactionManager = (*MockTxManager)(nil)
+
+func (m *MockTxManager) WithTx(ctx context.Context, fn func(ctx context.Context, qx any) error) error {
+	if m.WithTxFunc != nil {
+		return m.WithTxFunc(ctx, fn)
+	}
+	// pass nil qx by default
+	return fn(ctx, nil)
+}
+
+// ---- In-memory Locker (implements redis.Locker port) ----
+
+type MockLocker struct {
+	mu    sync.Mutex
+	held  map[string]string
+	ErrOn map[string]error
+}
+
+func NewMockLocker() *MockLocker {
+	return &MockLocker{held: map[string]string{}, ErrOn: map[string]error{}}
+}
+
+func (l *MockLocker) TryLock(ctx context.Context, key string, ttl time.Duration) (string, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err, bad := l.ErrOn[key]; bad {
+		return "", err
+	}
+	if tok, ok := l.held[key]; ok && tok != "" {
+		return "", errors.New("locked")
+	}
+	tok := uuid.NewString()
+	l.held[key] = tok
+	return tok, nil
+}
+
+func (l *MockLocker) Unlock(ctx context.Context, key, token string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.held[key] == token {
+		delete(l.held, key)
+		return nil
+	}
+	return errors.New("unlock token mismatch")
+}
