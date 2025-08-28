@@ -1,4 +1,3 @@
-// File: internal/infra/db/postgres/postgres_chat_session_repo.go
 package postgres
 
 import (
@@ -133,24 +132,69 @@ func (r *ChatSessionRepo) FindActiveByUser(ctx context.Context, qx any, userID s
 	return r.FindByID(ctx, qx, id)
 }
 
-func (r *ChatSessionRepo) FindAllByUser(ctx context.Context, qx any, userID string) ([]*model.ChatSession, error) {
-	const q = `SELECT id FROM chat_sessions WHERE user_id=$1 ORDER BY created_at DESC;`
-	rows, err := r.queryRows(ctx, qx, q, userID)
+func (r *ChatSessionRepo) ListByUser(ctx context.Context, qx any, userID string, offset, limit int) ([]*model.ChatSession, error) {
+	if offset < 0 {
+		offset = 0
+	}
+
+	base := `
+SELECT s.id, s.user_id, s.model, s.status, s.created_at, s.updated_at,
+       fm.role, fm.content, fm.tokens, fm.created_at
+FROM chat_sessions s
+LEFT JOIN LATERAL (
+    SELECT role, content, tokens, created_at
+    FROM chat_messages
+    WHERE session_id = s.id
+    ORDER BY created_at ASC
+    LIMIT 1
+) fm ON TRUE
+WHERE s.user_id = $1
+ORDER BY s.created_at DESC
+OFFSET $2
+`
+
+	var rows pgx.Rows
+	var err error
+
+	if limit > 0 {
+		q := base + " LIMIT $3;"
+		// if you use a helper:
+		// rows, err = r.queryRows(ctx, qx, q, userID, offset, limit)
+		rows, err = r.pool.Query(ctx, q, userID, offset, limit)
+	} else {
+		q := base + ";"
+		// rows, err = r.queryRows(ctx, qx, q, userID, offset)
+		rows, err = r.pool.Query(ctx, q, userID, offset)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []*model.ChatSession
+
+	out := make([]*model.ChatSession, 0, 16)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var s model.ChatSession
+		var firstRole, firstContent sql.NullString
+		var firstTokens sql.NullInt32
+		var firstCreated sql.NullTime
+
+		if err := rows.Scan(
+			&s.ID, &s.UserID, &s.Model, &s.Status, &s.CreatedAt, &s.UpdatedAt,
+			&firstRole, &firstContent, &firstTokens, &firstCreated,
+		); err != nil {
 			return nil, err
 		}
-		s, err := r.FindByID(ctx, qx, id)
-		if err != nil {
-			return nil, err
+
+		if firstRole.Valid && firstContent.Valid {
+			s.Messages = append(s.Messages, model.ChatMessage{
+				SessionID: s.ID,
+				Role:      firstRole.String,
+				Content:   firstContent.String,
+				Tokens:    int(firstTokens.Int32),
+				Timestamp: firstCreated.Time,
+			})
 		}
-		out = append(out, s)
+		out = append(out, &s)
 	}
 	return out, rows.Err()
 }
