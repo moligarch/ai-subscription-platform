@@ -1,9 +1,8 @@
-// File: internal/infra/redis/lock.go
 package redis
 
 import (
 	"context"
-	"telegram-ai-subscription/internal/domain"
+	derror "telegram-ai-subscription/internal/error"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -35,7 +34,7 @@ func (l *RedisLocker) TryLock(ctx context.Context, key string, ttl time.Duration
 		}
 		time.Sleep(50 * time.Millisecond) // wait before retrying
 	}
-	return "", domain.ErrActiveChatExists
+	return "", derror.ErrActiveChatExists
 }
 
 var luaUnlock = redis.NewScript(`

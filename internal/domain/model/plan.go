@@ -12,7 +12,7 @@ type SubscriptionPlan struct {
 	ID           string
 	Name         string
 	DurationDays int
-	Credits      int
+	Credits      int64
 	PriceIRR     int64
 	CreatedAt    time.Time
 }
@@ -20,7 +20,7 @@ type SubscriptionPlan struct {
 func (p *SubscriptionPlan) IsZero() bool { return p == nil || p.ID == "" }
 
 // NewSubscriptionPlan validates and constructs a plan.
-func NewSubscriptionPlan(id, name string, durationDays, credits int, priceIRR int64) (*SubscriptionPlan, error) {
+func NewSubscriptionPlan(id, name string, durationDays int, credits int64, priceIRR int64) (*SubscriptionPlan, error) {
 	if id == "" || name == "" || durationDays <= 0 || credits < 0 || priceIRR <= 0 {
 		return nil, domain.ErrInvalidArgument
 	}

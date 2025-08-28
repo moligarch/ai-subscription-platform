@@ -38,7 +38,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
   id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
   name           TEXT         NOT NULL UNIQUE,
   duration_days  INTEGER      NOT NULL CHECK (duration_days > 0),
-  credits        INTEGER      NOT NULL CHECK (credits >= 0),
+  credits        BIGINT       NOT NULL DEFAULT 0 CHECK (credits >= 0),
   price_irr      BIGINT       NOT NULL DEFAULT 0 CHECK (price_irr >= 0),
   created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS user_subscriptions (
   scheduled_start_at   TIMESTAMPTZ          NULL,
   start_at             TIMESTAMPTZ          NULL,
   expires_at           TIMESTAMPTZ          NULL,
-  remaining_credits    INTEGER              NOT NULL DEFAULT 0 CHECK (remaining_credits >= 0),
+  remaining_credits    BIGINT               NOT NULL DEFAULT 0 CHECK (remaining_credits >= 0),
   status               subscription_status  NOT NULL DEFAULT 'reserved'
 );
 

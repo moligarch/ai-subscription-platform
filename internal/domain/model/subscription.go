@@ -26,7 +26,7 @@ type UserSubscription struct {
 	ScheduledStartAt *time.Time // nil if should start immediately
 	StartAt          *time.Time // nil until active
 	ExpiresAt        *time.Time // nil until scheduled/started
-	RemainingCredits int
+	RemainingCredits int64
 	Status           SubscriptionStatus
 }
 

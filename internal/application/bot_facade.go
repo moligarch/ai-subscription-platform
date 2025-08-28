@@ -1,4 +1,3 @@
-// File: internal/application/bot_facade.go
 package application
 
 import (
@@ -70,7 +69,7 @@ func (b *BotFacade) HandlePlans(ctx context.Context, tgID int64) (string, error)
 
 // HandleCreatePlan creates a new plan (admin).
 // NOTE: your PlanUC.Create has signature: Create(ctx, name string, durationDays int, credits int, priceIRR int64) (string, error)
-func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationDays, credits int) (string, error) {
+func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationDays int, credits int64) (string, error) {
 	const priceIRR int64 = 1000 // dev price; adjust or pass from admin command parsing later
 	planUC, err := b.PlanUC.Create(ctx, name, durationDays, credits, priceIRR)
 	if err != nil {
@@ -80,7 +79,7 @@ func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationD
 }
 
 // HandleUpdatePlan updates an existing plan (admin).
-func (b *BotFacade) HandleUpdatePlan(ctx context.Context, id, name string, durationDays, credits int) (string, error) {
+func (b *BotFacade) HandleUpdatePlan(ctx context.Context, id, name string, durationDays int, credits int64) (string, error) {
 	plan, err := b.PlanUC.Get(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("get plan: %w", err)
@@ -283,7 +282,7 @@ func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text stri
 			strings.Contains(strings.ToLower(err.Error()), "entity not found") ||
 			strings.Contains(strings.ToLower(err.Error()), "no active subscription") ||
 			strings.Contains(strings.ToLower(err.Error()), "not enough credits") {
-			return "You need an active subscription (with credits) to chat.\nUse /plans to purchase, then /chat.", nil
+			return "❌ You don't have an active subscription. Use /plans to get started.", nil
 		}
 		return "", fmt.Errorf("send message: %w", err)
 	}

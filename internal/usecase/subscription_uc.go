@@ -1,4 +1,3 @@
-// File: internal/usecase/subscription_uc.go
 package usecase
 
 import (
@@ -21,7 +20,7 @@ type SubscriptionUseCase interface {
 	Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error)
 	GetActive(ctx context.Context, userID string) (*model.UserSubscription, error)
 	GetReserved(ctx context.Context, userID string) ([]*model.UserSubscription, error)
-	DeductCredits(ctx context.Context, userID string, amount int) (*model.UserSubscription, error)
+	DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error)
 	FinishExpired(ctx context.Context) (int, error)
 }
 
@@ -89,7 +88,7 @@ func (u *subscriptionUC) GetReserved(ctx context.Context, userID string) ([]*mod
 	return u.subs.FindReservedByUser(ctx, nil, userID)
 }
 
-func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amount int) (*model.UserSubscription, error) {
+func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error) {
 	s, err := u.subs.FindActiveByUser(ctx, nil, userID)
 	if err != nil {
 		// map repo not-found to a typed UC error
@@ -139,5 +138,3 @@ func (u *subscriptionUC) FinishExpired(ctx context.Context) (int, error) {
 	}
 	return count, nil
 }
-
-func ptrTime(t time.Time) *time.Time { return &t }

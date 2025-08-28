@@ -1,4 +1,3 @@
-// File: internal/usecase/notification_uc.go
 package usecase
 
 import (

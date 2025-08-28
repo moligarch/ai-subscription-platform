@@ -1,4 +1,3 @@
-// File: internal/infra/api/guard.go
 package api
 
 import (

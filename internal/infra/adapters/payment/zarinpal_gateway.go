@@ -1,4 +1,3 @@
-// File: internal/infra/adapters/payment/zarinpal_gateway.go
 package payment
 
 import (
