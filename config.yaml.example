@@ -24,12 +24,24 @@ redis:
   ttl: "1h"
 
 ai:
-  openai_key: ""          # if present and gemini_key is empty -> OpenAI is used
-  gemini_key: "YOUR_GEMINI_KEY"
-  gemini_url: "https://generativelanguage.googleapis.com"
-  default_model: "gpt-4o-mini"
-  metis_key: "YOUR-METIS-KEY"
-  metis_base_url: "https://api.metisai.ir/openai/v1"
+  model_provider_map:
+    gpt-4o-mini: openai
+    gpt-4o: openai
+    gemini-1.5-flash: gemini
+    gemini-1.5-pro: gemini
+
+  openai:
+    api_key: "..."
+    base_url: ""            # leave empty for api.openai.com; set to OpenRouter/Metis base to route there
+    default_model: gpt-4o-mini
+
+  gemini:
+    api_key: "..."
+    base_url: ""            # usually empty; override only if you proxy Gemini
+    default_model: gemini-1.5-flash
+    
+  concurrent_limit: 24
+  max_output_tokens: 512
 
 payment:
   zarinpal:

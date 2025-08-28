@@ -1,96 +1,135 @@
+// File: .\internal\infra\adapters\ai\openai_adapter.go
 package ai
 
 import (
-	"bytes"
+	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"net/http"
-	"time"
+	"strings"
+
+	openai "github.com/openai/openai-go/v2"
+	"github.com/openai/openai-go/v2/option"
+	"github.com/openai/openai-go/v2/packages/param"
+
+	"github.com/pkoukk/tiktoken-go"
 
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 )
 
-// Compile-time assurance this adapter satisfies the port
 var _ adapter.AIServiceAdapter = (*OpenAIAdapter)(nil)
 
-// OpenAIAdapter implements adapter.AIServiceAdapter using Chat Completions API.
 type OpenAIAdapter struct {
-	apiKey string
-	base   string // e.g., https://api.openai.com/v1
-	model  string
-	client *http.Client
+	client       *openai.Client
+	defaultModel string
+	maxOut       int
 }
 
-func NewOpenAIAdapter(apiKey, model string) (*OpenAIAdapter, error) {
+func NewOpenAIAdapter(apiKey, baseURL, defaultModel string, maxOut int) (*OpenAIAdapter, error) {
 	if apiKey == "" {
-		return nil, errors.New("openai api key empty")
+		return nil, errors.New("openai: empty api key")
 	}
-	if model == "" {
-		model = "gpt-4o-mini"
+	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	if strings.TrimSpace(baseURL) != "" {
+		opts = append(opts, option.WithBaseURL(strings.TrimRight(baseURL, "/")))
 	}
+
+	cl := openai.NewClient(opts...)
 	return &OpenAIAdapter{
-		apiKey: apiKey,
-		base:   "https://api.openai.com/v1",
-		model:  model,
-		client: &http.Client{Timeout: 30 * time.Second},
+		client:       &cl,
+		defaultModel: defaultModel,
+		maxOut:       maxOut,
 	}, nil
 }
 
 func (o *OpenAIAdapter) ListModels(ctx context.Context) ([]string, error) {
-	return []string{o.model}, nil
+	// Keep minimal & resilient: return just the default if listing isn’t needed.
+	if o.defaultModel != "" {
+		return []string{o.defaultModel}, nil
+	}
+	return []string{"gpt-4o-mini"}, nil
 }
 
 func (o *OpenAIAdapter) GetModelInfo(model string) (adapter.ModelInfo, error) {
-	if model == "" {
-		model = o.model
+	return adapter.ModelInfo{Name: modelOrDefault(model, o.defaultModel)}, nil
+}
+
+// CountTokens best-effort using tiktoken-go.
+// NOTE: OpenAI can change tokenization; this is only for pre-checks.
+func (o *OpenAIAdapter) CountTokens(ctx context.Context, model string, messages []adapter.Message) (int, error) {
+	enc, err := tiktoken.EncodingForModel(modelOrDefault(model, o.defaultModel))
+	if err != nil {
+		enc, err = tiktoken.GetEncoding("cl100k_base")
+		if err != nil {
+			return 0, err
+		}
 	}
-	return adapter.ModelInfo{
-		Name:        model,
-		Description: "OpenAI Chat Completions model",
-		MaxTokens:   0,
-		Supports:    []string{"text"},
-	}, nil
+	total := 0
+	for _, m := range messages {
+		total += len(enc.Encode(m.Content, nil, nil))
+		// Optional: small overhead; comment out if you prefer raw-contents only.
+		// total += len(enc.Encode(m.Role, nil, nil))
+	}
+	return total, nil
 }
 
 func (o *OpenAIAdapter) Chat(ctx context.Context, model string, messages []adapter.Message) (string, error) {
-	if model == "" {
-		model = o.model
+	reply, _, err := o.ChatWithUsage(ctx, model, messages)
+	return reply, err
+}
+
+func (o *OpenAIAdapter) ChatWithUsage(ctx context.Context, model string, messages []adapter.Message) (string, adapter.Usage, error) {
+	if len(messages) == 0 {
+		return "", adapter.Usage{}, errors.New("openai: no messages")
 	}
-
-	// Build the request using the shared adapter.Message with JSON tags
-	reqBody := struct {
-		Model    string            `json:"model"`
-		Messages []adapter.Message `json:"messages"`
-	}{Model: model, Messages: messages}
-
-	b, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, o.base+"/chat/completions", bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-
-	resp, err := o.client.Do(req)
+	msgs := toOpenAIMessages(messages)
+	maxtkn := param.Opt[int64]{}
+	maxtkn.Value = int64(o.maxOut)
+	resp, err := o.client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:               modelOrDefault(model, o.defaultModel),
+		Messages:            msgs,
+		MaxCompletionTokens: maxtkn,
+	})
 	if err != nil {
-		return "", err
+		return "", adapter.Usage{}, err
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("openai http %d", resp.StatusCode)
+	text := ""
+	if len(resp.Choices) > 0 {
+		text = resp.Choices[0].Message.Content
 	}
+	u := adapter.Usage{}
+	if resp.Usage.JSON.TotalTokens.Valid() {
+		u.TotalTokens = int(resp.Usage.TotalTokens)
+		u.PromptTokens = int(resp.Usage.PromptTokens)
+		u.CompletionTokens = int(resp.Usage.CompletionTokens)
+	}
+	return text, u, nil
+}
 
-	var payload struct {
-		Choices []struct {
-			Message adapter.Message `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", err
-	}
-	for _, c := range payload.Choices {
-		if c.Message.Content != "" {
-			return c.Message.Content, nil
+// --- helpers ---
+
+func toOpenAIMessages(msgs []adapter.Message) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
+	for _, m := range msgs {
+		switch strings.ToLower(m.Role) {
+		case "assistant":
+			out = append(out, openai.AssistantMessage(m.Content))
+		case "system":
+			out = append(out, openai.SystemMessage(m.Content))
+		default:
+			out = append(out, openai.UserMessage(m.Content))
 		}
 	}
-	return "", errors.New("no choice content")
+	return out
+}
+
+// (Optional) generic word counter if you want a pure-length precheck:
+// keeps here as a utility others can reuse.
+func countWords(s string) int {
+	sc := bufio.NewScanner(strings.NewReader(s))
+	sc.Split(bufio.ScanWords)
+	n := 0
+	for sc.Scan() {
+		n++
+	}
+	return n
 }
