@@ -74,6 +74,13 @@ func main() {
 	chatCache := red.NewChatCache(redisClient, cfg.Redis.TTL)
 	locker := red.NewLocker(redisClient)
 
+	// ---- Postgres ----
+	pool, err := pg.TryConnect(ctx, cfg.Database.URL, int32(cfg.Database.PoolMaxConns), 30*time.Second)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("postgres")
+	}
+	defer pg.ClosePgxPool(pool)
+
 	// ---- Encryption ----
 	encKey := cfg.Security.EncryptionKey
 	if len(encKey) != 32 {
