@@ -1,0 +1,25 @@
+# Directories
+/out/
+bin/
+dist/
+deploy/
+.github/
+.vscode/
+
+# VCS / IDE
+.git
+.gitignore
+.vscode/
+.idea
+
+# OS junk
+.DS_Store
+
+
+# Local secrets (we'll mount them instead)
+config.yaml
+.env
+
+# Test cache
+**/*_test.go
+.coverage
