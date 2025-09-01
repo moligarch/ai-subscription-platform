@@ -1,4 +1,3 @@
-// File: internal/infra/security/encryption_service.go
 package security
 
 import (

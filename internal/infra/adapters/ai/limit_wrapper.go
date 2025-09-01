@@ -1,4 +1,3 @@
-// File: internal/infra/adapters/ai/limit_wrapper.go
 package ai
 
 import (
@@ -6,6 +5,9 @@ import (
 
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 )
+
+// Compile-time check
+var _ adapter.AIServiceAdapter = (*limitedAI)(nil)
 
 type limitedAI struct {
 	inner adapter.AIServiceAdapter
@@ -36,5 +38,14 @@ func (l *limitedAI) Chat(ctx context.Context, model string, messages []adapter.M
 	return l.inner.Chat(ctx, model, messages)
 }
 
-// Compile-time check
-var _ adapter.AIServiceAdapter = (*limitedAI)(nil)
+func (l *limitedAI) ChatWithUsage(ctx context.Context, model string, messages []adapter.Message) (string, adapter.Usage, error) {
+	l.sem <- struct{}{}
+	defer func() { <-l.sem }()
+	return l.inner.ChatWithUsage(ctx, model, messages)
+}
+
+func (l *limitedAI) CountTokens(ctx context.Context, model string, messages []adapter.Message) (int, error) {
+	l.sem <- struct{}{}
+	defer func() { <-l.sem }()
+	return l.inner.CountTokens(ctx, model, messages)
+}

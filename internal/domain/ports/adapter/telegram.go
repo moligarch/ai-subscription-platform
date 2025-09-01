@@ -1,4 +1,3 @@
-// File: internal/domain/ports/adapter/telegram.go
 package adapter
 
 import "context"

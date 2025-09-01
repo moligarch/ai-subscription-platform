@@ -1,4 +1,3 @@
-// File: internal/infra/worker/pool.go
 package worker
 
 import (

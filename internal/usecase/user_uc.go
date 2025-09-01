@@ -1,4 +1,3 @@
-// File: internal/usecase/user_uc.go
 package usecase
 
 import (

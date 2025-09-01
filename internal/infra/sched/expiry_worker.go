@@ -1,4 +1,3 @@
-// File: internal/infra/sched/expiry_worker.go
 package sched
 
 import (

@@ -1,4 +1,3 @@
-// File: internal/domain/model/chat_session.go
 package model
 
 import (

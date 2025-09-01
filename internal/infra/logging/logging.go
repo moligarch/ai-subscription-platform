@@ -1,4 +1,3 @@
-// File: internal/infra/logging/logging.go
 package logging
 
 import (

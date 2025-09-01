@@ -1,4 +1,3 @@
-// File: internal/infra/db/postgres/postgres_plan_repo.go
 package postgres
 
 import (

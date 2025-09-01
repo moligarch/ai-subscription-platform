@@ -1,4 +1,3 @@
-// File: internal/config/config.go
 package config
 
 import (
@@ -46,13 +45,22 @@ type RedisConfig struct {
 }
 
 type AIConfig struct {
-	OpenAIKey       string `yaml:"openai_key"`
-	GeminiKey       string `yaml:"gemini_key"`
-	GeminiURL       string `yaml:"gemini_url"`
-	DefaultModel    string `yaml:"default_model"`
-	MetisKey        string `yaml:"metis_key"`
-	MetisBaseURL    string `yaml:"metis_base_url"`
-	ConcurrentLimit int    `yaml:"concurrent_limit"` // max concurrent AI calls
+	// model_provider_map maps model names to a provider key: "openai" or "gemini"
+	ModelProviderMap map[string]string `yaml:"model_provider_map"`
+	OpenAI           struct {
+		APIKey       string `yaml:"api_key"`
+		BaseURL      string `yaml:"base_url"` // supports OpenRouter/Metis style, leave empty for OpenAI
+		DefaultModel string `yaml:"default_model"`
+	} `yaml:"openai"`
+
+	Gemini struct {
+		APIKey       string `yaml:"api_key"`
+		BaseURL      string `yaml:"base_url"`
+		DefaultModel string `yaml:"default_model"`
+	} `yaml:"gemini"`
+
+	ConcurrentLimit int `yaml:"concurrent_limit"` // max in-flight AI calls across all providers
+	MaxOutputTokens int `yaml:"max_output_tokens"`
 }
 
 type PaymentConfig struct {
@@ -117,11 +125,12 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.Redis.TTL = normalizeTTL(cfg.Redis.TTL)
 
-	if cfg.AI.DefaultModel == "" {
-		cfg.AI.DefaultModel = "gpt-4o-mini"
+	if cfg.AI.OpenAI.DefaultModel == "" {
+		cfg.AI.OpenAI.DefaultModel = "gpt-4o-mini"
 	}
-	if cfg.AI.MetisBaseURL == "" {
-		cfg.AI.MetisBaseURL = "https://api.metisai.ir/openai/v1"
+
+	if cfg.AI.Gemini.DefaultModel == "" {
+		cfg.AI.Gemini.DefaultModel = "gemini-1.5-flash"
 	}
 
 	// Minimal validation

@@ -1,68 +1,113 @@
+// File: .\cmd\seed\main.go
 package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"time"
 
 	"telegram-ai-subscription/internal/config"
-	pg "telegram-ai-subscription/internal/infra/db/postgres"
-	"telegram-ai-subscription/internal/usecase"
+	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/infra/db/postgres"
+
+	"github.com/google/uuid"
 )
 
 func main() {
-	// ---- Config ----
+	ctx := context.Background()
+
+	// Load config (so we can reuse DB DSN)
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		log.Fatalf("config load: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// Connect Postgres
-	pool, err := pg.NewPgxPool(ctx, cfg.Database.URL, 4)
+	pool, err := postgres.NewPgxPool(ctx, cfg.Database.URL, 20)
 	if err != nil {
 		log.Fatalf("postgres: %v", err)
 	}
 	defer pool.Close()
 
-	planRepo := pg.NewPostgresPlanRepo(pool)
-	planUC := usecase.NewPlanUseCase(planRepo)
+	// Repos
+	plans := postgres.NewPostgresPlanRepo(pool)
+	prices := postgres.NewPostgresModelPricingRepo(pool)
 
-	// If plans already exist, do nothing
-	plans, err := planUC.List(ctx)
-	if err != nil {
-		log.Fatalf("list plans: %v", err)
+	now := time.Now()
+
+	// --- Seed Plans (micro-credits) ---
+	// TIP: credits are MICRO-CREDITS; adjust to match your pricing.
+	seedPlans := []model.SubscriptionPlan{
+		{
+			ID:           uuid.NewString(),
+			Name:         "Starter",
+			DurationDays: 30,
+			Credits:      20_000_000, // 20.0 credits in micro units (example)
+			PriceIRR:     3_900_000,
+			CreatedAt:    now,
+		},
+		{
+			ID:           uuid.NewString(),
+			Name:         "Pro",
+			DurationDays: 30,
+			Credits:      100_000_000, // 100.0 credits
+			PriceIRR:     15_900_000,
+			CreatedAt:    now,
+		},
 	}
-	if len(plans) > 0 {
-		fmt.Printf("%d plans already present. No changes.\n", len(plans))
-		for _, p := range plans {
-			fmt.Printf("  - %s (days=%d, credits=%d, price=%d IRR)\n", p.Name, p.DurationDays, p.Credits, p.PriceIRR)
+
+	for _, p := range seedPlans {
+		if err := plans.Save(ctx, &p); err != nil {
+			log.Printf("plan upsert %s: %v", p.ID, err)
+		} else {
+			log.Printf("plan upserted: %s", p.ID)
 		}
-		return
 	}
 
-	// Seed a few sample plans for testing payment flow
-	seed := []struct {
-		Name  string
-		Days  int
-		Cred  int
-		Price int64
-	}{
-		{"Starter", 7, 300, 150_000},
-		{"Pro", 30, 2000, 690_000},
-		{"Ultra", 90, 8000, 1_890_000},
+	// --- Seed Model Pricing (per-token prices in micro-credits) ---
+	// You can tweak these to your actual pricing. The keys must match model names user selects.
+	seedPrices := []model.ModelPricing{
+		{
+			ID:                     uuid.NewString(),
+			ModelName:              "gpt-4o-mini",
+			InputTokenPriceMicros:  30, // 0.000030 credits per input token
+			OutputTokenPriceMicros: 60, // 0.000060 credits per output token
+			Active:                 true,
+			CreatedAt:              now, UpdatedAt: now,
+		},
+		{
+			ID:                     uuid.NewString(),
+			ModelName:              "gpt-4o",
+			InputTokenPriceMicros:  150,
+			OutputTokenPriceMicros: 300,
+			Active:                 true,
+			CreatedAt:              now, UpdatedAt: now,
+		},
+		{
+			ID:                     uuid.NewString(),
+			ModelName:              "gemini-1.5-flash",
+			InputTokenPriceMicros:  40,
+			OutputTokenPriceMicros: 80,
+			Active:                 true,
+			CreatedAt:              now, UpdatedAt: now,
+		},
+		{
+			ID:                     uuid.NewString(),
+			ModelName:              "gemini-1.5-pro",
+			InputTokenPriceMicros:  90,
+			OutputTokenPriceMicros: 180,
+			Active:                 true,
+			CreatedAt:              now, UpdatedAt: now,
+		},
 	}
 
-	for _, s := range seed {
-		p, err := planUC.Create(ctx, s.Name, s.Days, s.Cred, s.Price)
-		if err != nil {
-			log.Fatalf("create plan %q: %v", s.Name, err)
+	for _, pr := range seedPrices {
+		if err := prices.Save(ctx, &pr); err != nil {
+			log.Printf("pricing upsert %s: %v", pr.ModelName, err)
+		} else {
+			log.Printf("pricing upserted: %s", pr.ModelName)
 		}
-		fmt.Printf("seeded: %s (id=%s, days=%d, credits=%d, price=%d IRR)\n", p.Name, p.ID, p.DurationDays, p.Credits, p.PriceIRR)
 	}
 
-	fmt.Println("✅ Seeding complete.")
+	log.Println("✅ seed complete")
 }

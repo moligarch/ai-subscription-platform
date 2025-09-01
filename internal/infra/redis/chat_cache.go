@@ -1,4 +1,3 @@
-// internal/infra/redis/chat_cache.go
 package redis
 
 import (

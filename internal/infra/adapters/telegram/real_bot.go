@@ -1,4 +1,3 @@
-// File: internal/infra/adapters/telegram/real_bot.go
 package telegram
 
 import (
@@ -15,9 +14,9 @@ import (
 
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
-	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	derror "telegram-ai-subscription/internal/error"
 	red "telegram-ai-subscription/internal/infra/redis"
 )
 
@@ -147,6 +146,7 @@ func (r *RealTelegramBotAdapter) cbRoutes() map[string]cbHandler {
 			}
 			return r.SendMessage(ctx, id, text)
 		},
+		"cmd:history": func(ctx context.Context, id int64, _ string) error { return r.sendHistoryMenu(ctx, id) },
 	}
 }
 
@@ -184,7 +184,7 @@ func (r *RealTelegramBotAdapter) cbPrefixRoutes() []struct {
 				model := strings.TrimPrefix(data, "chat:")
 				text, err := r.facade.HandleStartChat(ctx, id, model)
 				if err != nil {
-					if errors.Is(err, domain.ErrActiveChatExists) {
+					if errors.Is(err, derror.ErrActiveChatExists) {
 						text = "You already have an active chat session."
 					} else {
 						text = "Failed to start chat."
@@ -194,6 +194,35 @@ func (r *RealTelegramBotAdapter) cbPrefixRoutes() []struct {
 					return err
 				}
 				return r.sendEndChatButton(ctx, id)
+			},
+		},
+		{
+			Prefix: "hist:cont:",
+			Fn: func(ctx context.Context, id int64, data string) error {
+				sessionID := strings.TrimPrefix(data, "hist:cont:")
+				user, err := r.facade.UserUC.GetByTelegramID(ctx, id)
+				if err != nil || user == nil {
+					return r.SendMessage(ctx, id, "No user found. Try /start first.")
+				}
+				if err := r.facade.ChatUC.SwitchActiveSession(ctx, user.ID, sessionID); err != nil {
+					return r.SendMessage(ctx, id, "Failed to switch to this chat.")
+				}
+				if err := r.SendMessage(ctx, id, "This chat is now active. You can continue the conversation."); err != nil {
+					return err
+				}
+				// show End Chat button like after /chat
+				return r.sendEndChatButton(ctx, id)
+			},
+		},
+		{
+			Prefix: "hist:del:",
+			Fn: func(ctx context.Context, id int64, data string) error {
+				sessionID := strings.TrimPrefix(data, "hist:del:")
+				if err := r.facade.ChatUC.DeleteSession(ctx, sessionID); err != nil {
+					return r.SendMessage(ctx, id, "Failed to delete this chat.")
+				}
+				// Refresh history list after deletion
+				return r.sendHistoryMenu(ctx, id)
 			},
 		},
 	}
@@ -348,7 +377,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 		model := cmd[1]
 		text, err := r.facade.HandleStartChat(ctx, int64(tgUser.ID), model)
 		if err != nil {
-			if errors.Is(err, domain.ErrActiveChatExists) {
+			if errors.Is(err, derror.ErrActiveChatExists) {
 				text = "You already have an active chat session."
 			} else {
 				text = "Failed to start chat."
@@ -448,8 +477,9 @@ func (r *RealTelegramBotAdapter) sendMainMenu(ctx context.Context, telegramID in
 	}
 
 	rows := [][]adapter.InlineButton{
-		{{Text: "🧾 Plans", Data: "cmd:plans"}},
+		{{Text: "🛒 Plans", Data: "cmd:plans"}},
 		{{Text: "📊 Status", Data: "cmd:status"}},
+		{{Text: "💾 History", Data: "cmd:history"}},
 		{{Text: "💬 Start Chat", Data: "cmd:chat"}},
 	}
 	if hasActive {
@@ -504,6 +534,42 @@ func (r *RealTelegramBotAdapter) sendEndChatButton(ctx context.Context, telegram
 	}
 	return r.SendButtons(ctx, telegramID, "Chat started. Type your message, or tap to end:", rows)
 }
+
+func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID int64) error {
+	user, err := r.facade.UserUC.GetByTelegramID(ctx, telegramID)
+	if err != nil || user == nil {
+		return r.SendMessage(ctx, telegramID, "No user found. Try /start first.")
+	}
+
+	items, err := r.facade.ChatUC.ListHistory(ctx, user.ID, 0, 10)
+	if err != nil {
+		return r.SendMessage(ctx, telegramID, "Failed to load history.")
+	}
+	if len(items) == 0 {
+		rows := [][]adapter.InlineButton{{{Text: "◀️ Menu", Data: "cmd:menu"}}}
+		return r.SendButtons(ctx, telegramID, "No past chats found.", rows)
+	}
+
+	// Build rows: one row per session with [Continue] [Delete]
+	rows := make([][]adapter.InlineButton, 0, len(items)+1)
+	for idx, it := range items {
+		label := it.FirstMessage
+		if strings.TrimSpace(label) == "" {
+			label = "(empty)"
+		}
+		// prefix with index and model for clarity
+		display := strconv.Itoa(idx+1) + ") [" + it.Model + "] " + label
+		rows = append(rows, []adapter.InlineButton{
+			{Text: display, Data: "hist:cont:" + it.SessionID},
+			{Text: "🗑 Delete", Data: "hist:del:" + it.SessionID},
+		})
+	}
+	// Footer row
+	rows = append(rows, []adapter.InlineButton{{Text: "◀️ Menu", Data: "cmd:menu"}})
+
+	return r.SendButtons(ctx, telegramID, "🗂️ Your chats:", rows)
+}
+
 
 var httpURLRe = regexp.MustCompile(`https?:\/\/(?:[-\w]+\.)+[a-zA-Z]{2,}(?:\/[^\s\\\n]*)`)
 

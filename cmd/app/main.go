@@ -15,7 +15,7 @@ import (
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
-	aiAdapters "telegram-ai-subscription/internal/infra/adapters/ai"
+	"telegram-ai-subscription/internal/infra/adapters/ai"
 	payAdapters "telegram-ai-subscription/internal/infra/adapters/payment"
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
 	"telegram-ai-subscription/internal/infra/api"
@@ -86,33 +86,44 @@ func main() {
 	planUC := usecase.NewPlanUseCase(planRepo)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo)
 
-	// AI adapter selection (Metis -> Gemini -> OpenAI)
-	var ai adapter.AIServiceAdapter
-	if cfg.AI.MetisKey != "" {
-		ai, err = aiAdapters.NewMetisOpenAIAdapter(cfg.AI.MetisKey, cfg.AI.DefaultModel, cfg.AI.MetisBaseURL)
-		if err != nil {
-			logger.Fatal().Err(err).Msg("metis adapter")
-		}
-		logger.Info().Str("base", cfg.AI.MetisBaseURL).Str("model", cfg.AI.DefaultModel).Msg("AI=Metis(OpenAI compat)")
-	} else if cfg.AI.GeminiKey != "" {
-		ai, err = aiAdapters.NewGeminiAdapter(cfg.AI.GeminiKey, cfg.AI.GeminiURL, []string{cfg.AI.DefaultModel})
-		if err != nil {
-			logger.Fatal().Err(err).Msg("gemini adapter")
-		}
-		logger.Info().Str("base", cfg.AI.GeminiURL).Str("model", cfg.AI.DefaultModel).Msg("AI=Gemini")
-	} else if cfg.AI.OpenAIKey != "" {
-		ai, err = aiAdapters.NewOpenAIAdapter(cfg.AI.OpenAIKey, cfg.AI.DefaultModel)
-		if err != nil {
-			logger.Fatal().Err(err).Msg("openai adapter")
-		}
-		logger.Info().Str("model", cfg.AI.DefaultModel).Msg("AI=OpenAI")
-	} else {
-		logger.Fatal().Msg("no AI provider configured")
-	}
-	// global concurrent limiter for AI calls
-	ai = aiAdapters.NewLimitedAI(ai, cfg.AI.ConcurrentLimit)
+	providers := map[string]adapter.AIServiceAdapter{}
 
-	chatUC := usecase.NewChatUseCase(chatRepo, ai, subUC, locker, logger, cfg.Runtime.Dev)
+	if cfg.AI.OpenAI.APIKey != "" {
+		oa, err := ai.NewOpenAIAdapter(
+			cfg.AI.OpenAI.APIKey,
+			cfg.AI.OpenAI.BaseURL,
+			cfg.AI.OpenAI.DefaultModel,
+			cfg.AI.MaxOutputTokens, // NEW
+		)
+		if err != nil {
+			logger.Warn().Err(err).Msg("[OpenAI Adapter]")
+		} else {
+			providers["openai"] = ai.NewLimitedAI(oa, cfg.AI.ConcurrentLimit)
+			logger.Info().Str("default", cfg.AI.OpenAI.DefaultModel).Msg("[OpenAI Adapter]")
+		}
+	}
+
+	if cfg.AI.Gemini.APIKey != "" {
+		ga, err := ai.NewGeminiAdapter(
+			ctx,
+			cfg.AI.Gemini.APIKey,
+			cfg.AI.Gemini.BaseURL,
+			cfg.AI.Gemini.DefaultModel,
+			cfg.AI.MaxOutputTokens, // NEW
+		)
+		if err != nil {
+			logger.Warn().Err(err).Msg("[Gemini Adapter]")
+		} else {
+			providers["gemini"] = ai.NewLimitedAI(ga, cfg.AI.ConcurrentLimit)
+			logger.Info().Str("default", cfg.AI.Gemini.DefaultModel).Msg("[Gemini Adapter]")
+		}
+	}
+
+	// composite used across the app
+	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
+
+	priceRepo := pg.NewPostgresModelPricingRepo(pool)
+	chatUC := usecase.NewChatUseCase(chatRepo, aiRouter, subUC, locker, logger, cfg.Runtime.Dev, priceRepo)
 
 	// Payment gateway + use case
 	zp, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)

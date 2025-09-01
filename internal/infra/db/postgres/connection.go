@@ -1,4 +1,3 @@
-// File: internal/infra/db/postgres/connection.go
 package postgres
 
 import (

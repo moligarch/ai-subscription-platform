@@ -1,4 +1,3 @@
-// File: internal/usecase/plan_uc.go
 package usecase
 
 import (
@@ -12,7 +11,7 @@ import (
 var _ PlanUseCase = (*planUC)(nil)
 
 type PlanUseCase interface {
-	Create(ctx context.Context, name string, durationDays int, credits int, priceIRR int64) (*model.SubscriptionPlan, error)
+	Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error)
 	Update(ctx context.Context, plan *model.SubscriptionPlan) error
 	List(ctx context.Context) ([]*model.SubscriptionPlan, error)
 	Get(ctx context.Context, id string) (*model.SubscriptionPlan, error)
@@ -27,7 +26,7 @@ func NewPlanUseCase(plans repository.SubscriptionPlanRepository) *planUC {
 	return &planUC{plans: plans}
 }
 
-func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int, priceIRR int64) (*model.SubscriptionPlan, error) {
+func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error) {
 	sp := &model.SubscriptionPlan{
 		Name:         name,
 		DurationDays: durationDays,
