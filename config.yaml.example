@@ -2,7 +2,7 @@ bot:
   token: "BOT_TOKEN"
   mode: "polling"         # webhook | polling
   port: 9000              # only used if you later implement webhook
-  url: "http://localhost:9000"
+  url: "http://<your-domain>:9000"
   admin_ids:
     - 12345689
 
@@ -12,13 +12,14 @@ log:
   sampling: true   # enable sampling in prod
 
 admin:
-  port: 9090              # fallback port for HTTP server (incl. payment callback)
+  port: 8080              # fallback port for HTTP server (incl. payment callback)
 
 database:
-  url: "postgres://postgres:postgres@127.0.0.1:5432/subscription_test?sslmode=disable"
+  url: "postgres://app:app@<posgres_container_ip>:5432/appdb?sslmode=disable"
+  max_conn: 30
 
 redis:
-  url: "localhost:6379"
+  url: "<redis_container_ip>:6379"
   password: ""
   db: 1
   ttl: "1h"
@@ -47,7 +48,7 @@ payment:
   zarinpal:
     merchant_id: "YOUR-MERCHANT-ID"
     callback_url: "https://your-domain.tld/payment/callback/zp"   # used to extract callback path
-    callback_port: 9090          # optional; if absent we use admin.port
+    callback_port: 8080          # optional; if absent we use admin.port
     sandbox: true
     access_token: ""        # OAuth access token (required for Refund API)
     graphql_endpoint: ""    # optional; defaults to https://api.zarinpal.com/api/v4/graphql

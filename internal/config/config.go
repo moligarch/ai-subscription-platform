@@ -5,8 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,6 +37,8 @@ type AdminConfig struct {
 
 type DatabaseConfig struct {
 	URL string `yaml:"url"`
+	PoolMaxConns int `yaml:"max_conn"`
+	
 }
 
 type RedisConfig struct {
@@ -95,6 +99,60 @@ type Config struct {
 	Runtime RuntimeConfig `yaml:"-"`
 }
 
+type SafeAI struct {
+	ModelProviderMap map[string]string `json:"model_provider_map"`
+	OpenAI           struct {
+		BaseURL      string `json:"base_url"`
+		DefaultModel string `json:"default_model"`
+		HasAPIKey    bool   `json:"has_api_key"`
+	} `json:"openai"`
+	Gemini struct {
+		BaseURL      string `json:"base_url"`
+		DefaultModel string `json:"default_model"`
+		HasAPIKey    bool   `json:"has_api_key"`
+	} `json:"gemini"`
+	ConcurrentLimit int `json:"concurrent_limit"`
+	MaxOutputTokens int `json:"max_output_tokens"`
+}
+
+func (a *AIConfig) Safe() SafeAI {
+	s := SafeAI{
+		ModelProviderMap: a.ModelProviderMap,
+		ConcurrentLimit:  a.ConcurrentLimit,
+		MaxOutputTokens:  a.MaxOutputTokens,
+	}
+	s.OpenAI.BaseURL = a.OpenAI.BaseURL
+	s.OpenAI.DefaultModel = a.OpenAI.DefaultModel
+	s.OpenAI.HasAPIKey = a.OpenAI.APIKey != ""
+
+	s.Gemini.BaseURL = a.Gemini.BaseURL
+	s.Gemini.DefaultModel = a.Gemini.DefaultModel
+	s.Gemini.HasAPIKey = a.Gemini.APIKey != ""
+	return s
+}
+
+// Full safe config for the “effective config” log
+type SafeConfig struct {
+	Runtime  RuntimeConfig `json:"runtime"`
+	Log      LogConfig     `json:"log"`
+	AI       SafeAI        `json:"ai"`
+	Security struct {
+		KeyLen int  `json:"key_len"`
+		IsDev  bool `json:"is_dev"`
+	} `json:"security"`
+}
+
+func (c *Config) Redacted() SafeConfig {
+	out := SafeConfig{
+		Runtime: c.Runtime,
+		Log:     c.Log,
+		AI:      c.AI.Safe(),
+	}
+	out.Security.KeyLen = len(c.Security.EncryptionKey)
+	out.Security.IsDev = c.Runtime.Dev
+	return out
+}
+
 func LoadConfig() (*Config, error) {
 	var configPath string = ""
 	var dev bool
@@ -145,7 +203,68 @@ func LoadConfig() (*Config, error) {
 	}
 
 	cfg.Runtime.Dev = dev
+
+	// Final validation (fail fast)
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
 	return &cfg, nil
+}
+
+func (cfg *Config) Validate() error {
+	// MaxOutputTokens
+	if cfg.AI.MaxOutputTokens < 0 {
+		return fmt.Errorf("ai.max_output_tokens cannot be negative")
+	}
+	// ModelProviderMap must reference configured providers
+	for model, prov := range cfg.AI.ModelProviderMap {
+		p := strings.ToLower(strings.TrimSpace(prov))
+		switch p {
+		case "openai":
+			if cfg.AI.OpenAI.APIKey == "" {
+				return fmt.Errorf("ai.model_provider_map[%q]=openai but ai.openai.api_key is empty", model)
+			}
+		case "gemini":
+			if cfg.AI.Gemini.APIKey == "" {
+				return fmt.Errorf("ai.model_provider_map[%q]=gemini but ai.gemini.api_key is empty", model)
+			}
+		case "":
+			return fmt.Errorf("ai.model_provider_map[%q]: provider is empty", model)
+		default:
+			return fmt.Errorf("ai.model_provider_map[%q]: unknown provider %q", model, prov)
+		}
+	}
+	// Security: enforce 32-byte key in non-dev
+	if !cfg.Runtime.Dev {
+		if len(cfg.Security.EncryptionKey) != 32 {
+			return fmt.Errorf("security.encryption_key must be exactly 32 bytes in production")
+		}
+	}
+	return nil
+}
+
+func LoadConfigWithLogger(boot *zerolog.Logger) (*Config, error) {
+	cfg, err := LoadConfig() // call your existing LoadConfig
+	if err != nil {
+		if boot != nil {
+			boot.Error().Err(err).Msg("config.load.error")
+		}
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil { // you already added Validate()
+		if boot != nil {
+			boot.Error().Err(err).Msg("config.validate.error")
+		}
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
+	if boot != nil {
+		boot.Info().
+			Str("event", "config.loaded").
+			Interface("log", cfg.Log).
+			Interface("ai", cfg.AI.Safe()). // redacted keys (see below)
+			Msg("")
+	}
+	return cfg, nil
 }
 
 func normalizeTTL(d time.Duration) time.Duration {
