@@ -11,6 +11,7 @@ import (
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/metrics"
 )
 
 // PaymentUseCase defines payment orchestration at the application layer.
@@ -98,6 +99,7 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 	if err := u.payments.Save(ctx, nil, p); err != nil {
 		return nil, "", err
 	}
+	metrics.IncPayment("initiated")
 	return p, startURL, nil
 }
 
@@ -121,6 +123,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 	if err != nil {
 		// mark failed best-effort
 		_ = u.payments.UpdateStatus(ctx, nil, p.ID, model.PaymentStatusFailed, nil, nil)
+		metrics.IncPayment("failed")
 		return nil, err
 	}
 
@@ -168,7 +171,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 		CreatedAt:      time.Now(),
 	}
 	_ = u.purchases.Save(ctx, nil, pu)
-
+	metrics.IncPayment("succeeded")
 	return p, nil
 }
 

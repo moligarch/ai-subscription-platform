@@ -11,6 +11,8 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/usecase"
+
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type Server struct {
@@ -43,6 +45,7 @@ func NewServer(
 // Register attaches all handlers to the given mux.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc(s.cbPath, s.handleZarinpalCallback)
+	mux.Handle("/metrics", promhttp.Handler())
 }
 
 func (s *Server) handleZarinpalCallback(w http.ResponseWriter, r *http.Request) {

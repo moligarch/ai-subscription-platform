@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,34 +20,47 @@ import (
 	"telegram-ai-subscription/internal/infra/api"
 	pg "telegram-ai-subscription/internal/infra/db/postgres"
 	"telegram-ai-subscription/internal/infra/logging"
+	appmetrics "telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
 	"telegram-ai-subscription/internal/infra/sched"
 	"telegram-ai-subscription/internal/infra/security"
 	"telegram-ai-subscription/internal/usecase"
+
+	"github.com/rs/zerolog"
 )
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// ---- Boot logger (pre-config) ----
+	boot := zerolog.New(os.Stderr).With().
+		Timestamp().
+		Str("cmp", "boot").
+		Logger()
+
 	// ---- Config ----
-	cfg, err := config.LoadConfig()
+	cfg, err := config.LoadConfigWithLogger(&boot) // new helper; see below
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		boot.Error().Err(err).Msg("config load failed")
+		os.Exit(1)
 	}
 
 	// ---- Logging ----
-	logger := logging.New(cfg.Log, cfg.Runtime.Dev)
+	logger := logging.New(cfg.Log, cfg.Runtime.Dev) // your existing function
+
+	// log effective (redacted) config once final logger is ready
+	logger.Info().
+		Str("event", "config.effective").
+		Interface("config", cfg.Redacted()).
+		Msg("")
+
 	if cfg.Runtime.Dev {
 		logger.Info().Msg("[DEV MODE] Enabled")
 	}
 
-	// ---- Postgres ----
-	pool, err := pg.NewPgxPool(ctx, cfg.Database.URL, 10)
-	if err != nil {
-		logger.Fatal().Err(err).Msg("postgres")
-	}
-	defer pool.Close()
+	// ---- Metrics ----
+	appmetrics.MustRegister()
 
 	// ---- Redis ----
 	redisClient, err := red.NewClient(ctx, &cfg.Redis)
@@ -176,7 +188,7 @@ func main() {
 	if httpPort == 0 {
 		httpPort = cfg.Admin.Port
 	}
-	server := &http.Server{Addr: fmt.Sprintf(":%d", httpPort), Handler: handler}
+	server := &http.Server{Addr: fmt.Sprintf("0.0.0.0:%d", httpPort), Handler: handler}
 	// graceful shutdown for the HTTP server
 	defer func() {
 		shCtx, shCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -185,7 +197,7 @@ func main() {
 	}()
 
 	go func() {
-		logger.Info().Str("addr", server.Addr).Str("path", cbPath).Msg("http callback listening")
+		logger.Info().Str("addr", server.Addr).Str("path", cbPath).Msg("http listening")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error().Err(err).Msg("http server error")
 		}
