@@ -16,6 +16,7 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	derror "telegram-ai-subscription/internal/error"
 	"telegram-ai-subscription/internal/infra/logging"
+	"telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
 )
 
@@ -192,6 +193,8 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 			Msg("")
 
 		if action == "block" {
+			metrics.PrecheckBlocked(providerGuess, s.Model)
+
 			return fmt.Sprintf(
 				"⚠️ Insufficient balance.\nCurrent: %d µcr\nRequired for this message: %d µcr\n\nTip: try a shorter message or /plans to top up.",
 				balanceMicros, requiredMicros,
@@ -216,6 +219,7 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 	callStart := time.Now()
 	reply, usage, err := c.ai.ChatWithUsage(ctx, s.Model, adapterMsgs)
 	if err != nil {
+		metrics.ObserveChatUsage(providerGuess, s.Model, 0, 0, 0, 0, int(time.Since(callStart)/time.Millisecond), false)
 		return "", err
 	}
 
@@ -238,7 +242,15 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 			}
 		}
 	}
-
+	metrics.ObserveChatUsage(
+		providerGuess, s.Model,
+		usage.PromptTokens,
+		usage.CompletionTokens,
+		usage.TotalTokens,
+		spent, // micro-credits
+		int(time.Since(callStart)/time.Millisecond),
+		true, // success=true
+	)
 	c.log.Info().
 		Str("event", "chat.usage").
 		Str("user_id", s.UserID).

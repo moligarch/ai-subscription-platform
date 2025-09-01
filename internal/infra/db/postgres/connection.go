@@ -44,6 +44,57 @@ func NewPgxPool(ctx context.Context, dsn string, maxConns int32) (*pgxpool.Pool,
 	return pool, nil
 }
 
+// TryConnect attempts to create a pgx pool with retry/backoff and a readiness ping.
+// maxWait <= 0 defaults to 30s.
+func TryConnect(ctx context.Context, dsn string, maxConns int32, maxWait time.Duration) (*pgxpool.Pool, error) {
+	if maxWait <= 0 {
+		maxWait = 30 * time.Second
+	}
+
+	deadline := time.Now().Add(maxWait)
+	backoff := 200 * time.Millisecond
+	var lastErr error
+
+	for attempt := 1; ; attempt++ {
+		// Short per-attempt timeout for dialing the pool
+		dctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		pool, err := NewPgxPool(dctx, dsn, maxConns)
+		cancel()
+
+		if err == nil {
+			// Readiness ping via a trivial query
+			pctx, pcancel := context.WithTimeout(ctx, 3*time.Second)
+			var one int
+			qerr := pool.QueryRow(pctx, "select 1").Scan(&one)
+			pcancel()
+
+			if qerr == nil && one == 1 {
+				return pool, nil
+			}
+			lastErr = qerr
+			pool.Close()
+		} else {
+			lastErr = err
+		}
+
+		// No more time left?
+		if time.Now().After(deadline) {
+			break
+		}
+
+		// Sleep with capped exponential backoff
+		time.Sleep(backoff)
+		if backoff < 2*time.Second {
+			backoff *= 2
+			if backoff > 2*time.Second {
+				backoff = 2 * time.Second
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("connect pgxpool (retry for %s) failed: %w", maxWait, lastErr)
+}
+
 // ClosePgxPool is a convenience wrapper.
 func ClosePgxPool(pool *pgxpool.Pool) {
 	if pool != nil {

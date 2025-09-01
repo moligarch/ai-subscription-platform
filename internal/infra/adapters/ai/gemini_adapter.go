@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"google.golang.org/genai"
 
@@ -12,6 +13,9 @@ import (
 )
 
 var _ adapter.AIServiceAdapter = (*GeminiAdapter)(nil)
+
+// top-level (near other vars)
+const countTokensTimeout = 900 * time.Millisecond
 
 type GeminiAdapter struct {
 	client       *genai.Client
@@ -74,9 +78,12 @@ func (g *GeminiAdapter) GetModelInfo(model string) (adapter.ModelInfo, error) {
 
 func (g *GeminiAdapter) CountTokens(ctx context.Context, model string, messages []adapter.Message) (int, error) {
 	contents := toGenAIHistory(messages)
-	// Per docs, CountTokens takes []*genai.Content. (NOT []genai.Part)
-	// https://ai.google.dev/gemini-api/docs/tokens?hl=en#go
-	resp, err := g.client.Models.CountTokens(ctx, modelOrDefault(model, g.defaultModel), contents, nil)
+
+	// Short timeout to avoid blocking pre-check UX on network hiccups
+	ctx2, cancel := context.WithTimeout(ctx, countTokensTimeout)
+	defer cancel()
+
+	resp, err := g.client.Models.CountTokens(ctx2, modelOrDefault(model, g.defaultModel), contents, nil)
 	if err != nil {
 		return 0, err
 	}
