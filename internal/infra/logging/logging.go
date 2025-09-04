@@ -2,7 +2,9 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
@@ -11,6 +13,18 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
+
+// Trace error location in code for Trace|Debug level
+type locInfo struct{}
+
+func (loc locInfo) Run(e *zerolog.Event, l zerolog.Level, msg string) {
+	if zerolog.GlobalLevel() == zerolog.DebugLevel || zerolog.GlobalLevel() == zerolog.TraceLevel {
+		_, file, line, ok := runtime.Caller(0)
+		if ok {
+			e.Str("line", fmt.Sprintf("%s:%d", file, line))
+		}
+	}
+}
 
 // New creates a zerolog logger configured from config.
 // Supports "trace" | "debug" | "info" | "warn" | "error" levels
@@ -22,9 +36,9 @@ func New(cfg config.LogConfig, dev bool) *zerolog.Logger {
 	var base zerolog.Logger
 	if strings.ToLower(cfg.Format) == "console" || dev {
 		out := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-		base = zerolog.New(out).With().Timestamp().Logger()
+		base = zerolog.New(out).With().Timestamp().Logger().Hook(&locInfo{})
 	} else {
-		base = zerolog.New(os.Stdout).With().Timestamp().Logger()
+		base = zerolog.New(os.Stdout).With().Timestamp().Logger().Hook(&locInfo{})
 	}
 
 	if cfg.Sampling && !dev {
