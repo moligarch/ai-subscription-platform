@@ -11,9 +11,9 @@ import (
 // -----------------------------
 
 type UserRepository interface {
-	Save(ctx context.Context, qx any, u *model.User) error
-	FindByTelegramID(ctx context.Context, qx any, tgID int64) (*model.User, error)
-	FindByID(ctx context.Context, qx any, id string) (*model.User, error)
-	CountUsers(ctx context.Context, qx any) (int, error)
-	CountInactiveUsers(ctx context.Context, qx any, since time.Time) (int, error)
+	Save(ctx context.Context, tx Tx, u *model.User) error
+	FindByTelegramID(ctx context.Context, tx Tx, tgID int64) (*model.User, error)
+	FindByID(ctx context.Context, tx Tx, id string) (*model.User, error)
+	CountUsers(ctx context.Context, tx Tx) (int, error)
+	CountInactiveUsers(ctx context.Context, tx Tx, since time.Time) (int, error)
 }

@@ -1,6 +1,14 @@
 package repository
 
-import "context"
+import (
+	"context"
+
+	"github.com/jackc/pgx/v4"
+)
+
+type Tx interface{}
+
+var NoTX interface{}
 
 // TransactionManager provides a thin abstraction to execute a function within a
 // database transaction, passing the underlying transaction handle via `qx`.
@@ -24,5 +32,5 @@ import "context"
 //
 // Keep this interface small and stable.
 type TransactionManager interface {
-	WithTx(ctx context.Context, fn func(ctx context.Context, qx any) error) error
+	WithTx(ctx context.Context, txOpt pgx.TxOptions, fn func(ctx context.Context, tx Tx) error) error
 }

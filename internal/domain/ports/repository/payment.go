@@ -12,20 +12,20 @@ import (
 // -----------------------------
 
 type PaymentRepository interface {
-	Save(ctx context.Context, qx any, p *model.Payment) error
-	FindByID(ctx context.Context, qx any, id string) (*model.Payment, error)
-	FindByAuthority(ctx context.Context, qx any, authority string) (*model.Payment, error)
-	UpdateStatus(ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) error
-	SumByPeriod(ctx context.Context, qx any, period string) (int64, error)
+	Save(ctx context.Context, tx Tx, p *model.Payment) error
+	FindByID(ctx context.Context, tx Tx, id string) (*model.Payment, error)
+	FindByAuthority(ctx context.Context, tx Tx, authority string) (*model.Payment, error)
+	UpdateStatus(ctx context.Context, tx Tx, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) error
+	SumByPeriod(ctx context.Context, tx Tx, period string) (int64, error)
 	// Activation code helpers for manual post-payment activation flow
-	SetActivationCode(ctx context.Context, qx any, paymentID string, code string, expiresAt time.Time) error
-	FindByActivationCode(ctx context.Context, qx any, code string) (*model.Payment, error)
+	SetActivationCode(ctx context.Context, tx Tx, paymentID string, code string, expiresAt time.Time) error
+	FindByActivationCode(ctx context.Context, tx Tx, code string) (*model.Payment, error)
 	// Reconciliation helper: list pending payments older than cutoff
-	ListPendingOlderThan(ctx context.Context, qx any, olderThan time.Time, limit int) ([]*model.Payment, error)
+	ListPendingOlderThan(ctx context.Context, tx Tx, olderThan time.Time, limit int) ([]*model.Payment, error)
 
 	// UpdateStatusIfPending atomically changes status only if current status is 'pending' or 'initiated'.
 	// Returns true if a row was updated, false if not (e.g., already processed).
-	UpdateStatusIfPending(ctx context.Context, qx any, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error)
+	UpdateStatusIfPending(ctx context.Context, tx Tx, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error)
 }
 
 // -----------------------------
@@ -33,6 +33,6 @@ type PaymentRepository interface {
 // -----------------------------
 
 type PurchaseRepository interface {
-	Save(ctx context.Context, qx any, pu *model.Purchase) error
-	ListByUser(ctx context.Context, qx any, userID string) ([]*model.Purchase, error)
+	Save(ctx context.Context, tx Tx, pu *model.Purchase) error
+	ListByUser(ctx context.Context, tx Tx, userID string) ([]*model.Purchase, error)
 }
