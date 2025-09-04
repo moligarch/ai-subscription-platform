@@ -3,8 +3,6 @@ package postgres
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,35 +14,39 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
-var _ repository.ModelPricingRepository = (*PostgresModelPricingRepo)(nil)
+var _ repository.ModelPricingRepository = (*modelPricingRepo)(nil)
 
-type PostgresModelPricingRepo struct {
+type modelPricingRepo struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresModelPricingRepo(pool *pgxpool.Pool) *PostgresModelPricingRepo {
-	return &PostgresModelPricingRepo{pool: pool}
+func NewModelPricingRepo(pool *pgxpool.Pool) *modelPricingRepo {
+	return &modelPricingRepo{pool: pool}
 }
 
-func (r *PostgresModelPricingRepo) GetByModelName(ctx context.Context, name string) (*model.ModelPricing, error) {
+func (r *modelPricingRepo) GetByModelName(ctx context.Context, tx repository.Tx, name string) (*model.ModelPricing, error) {
 	const q = `
 SELECT id, model_name, input_token_price_micros, output_token_price_micros, active, created_at, updated_at
   FROM model_pricing
  WHERE model_name=$1 AND active=TRUE
  LIMIT 1;`
-	row := r.pool.QueryRow(ctx, q, name)
+	row, err := pickRow(ctx, r.pool, tx, q, name)
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			return nil, domain.ErrNotFound
+		default:
+			return nil, domain.ErrOperationFailed
+		}
+	}
 	var p model.ModelPricing
 	if err := row.Scan(&p.ID, &p.ModelName, &p.InputTokenPriceMicros, &p.OutputTokenPriceMicros, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
-		// align with repo conventions
-		if errors.Is(err, pgx.ErrNoRows) { // follows pattern used elsewhere
-			return nil, domain.ErrNotFound
-		}
-		return nil, fmt.Errorf("model_pricing.get: %w", err)
+		return nil, domain.ErrReadDatabaseRow
 	}
 	return &p, nil
 }
 
-func (r *PostgresModelPricingRepo) Save(ctx context.Context, p *model.ModelPricing) error {
+func (r *modelPricingRepo) Save(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
 	if p.ID == "" {
 		p.ID = uuid.NewString()
 	}
@@ -59,26 +61,38 @@ ON CONFLICT (id) DO UPDATE SET
   output_token_price_micros=EXCLUDED.output_token_price_micros,
   active=EXCLUDED.active,
   updated_at=EXCLUDED.updated_at;`
-	_, err := r.pool.Exec(ctx, q, p.ID, p.ModelName, p.InputTokenPriceMicros, p.OutputTokenPriceMicros, p.Active, p.CreatedAt, p.UpdatedAt)
-	return err
+	_, err := execSQL(ctx, r.pool, tx, q, p.ID, p.ModelName, p.InputTokenPriceMicros, p.OutputTokenPriceMicros, p.Active, p.CreatedAt, p.UpdatedAt)
+	if err != nil {
+		return domain.ErrOperationFailed
+	}
+	return nil
 }
 
-func (r *PostgresModelPricingRepo) ListActive(ctx context.Context) ([]*model.ModelPricing, error) {
+func (r *modelPricingRepo) ListActive(ctx context.Context, tx repository.Tx) ([]*model.ModelPricing, error) {
 	const q = `
 SELECT id, model_name, input_token_price_micros, output_token_price_micros, active, created_at, updated_at
   FROM model_pricing WHERE active=TRUE ORDER BY model_name ASC;`
-	rows, err := r.pool.Query(ctx, q)
+	rows, err := queryRows(ctx, r.pool, tx, q)
 	if err != nil {
-		return nil, fmt.Errorf("model_pricing.list: %w", err)
+		switch err {
+		case pgx.ErrNoRows:
+			return nil, domain.ErrNotFound
+		default:
+			return nil, domain.ErrOperationFailed
+		}
 	}
 	defer rows.Close()
+
 	var out []*model.ModelPricing
 	for rows.Next() {
 		var p model.ModelPricing
 		if err := rows.Scan(&p.ID, &p.ModelName, &p.InputTokenPriceMicros, &p.OutputTokenPriceMicros, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("model_pricing.scan: %w", err)
+			return nil, domain.ErrReadDatabaseRow
 		}
 		out = append(out, &p)
 	}
-	return out, rows.Err()
+	if rows.Err() != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return out, nil
 }

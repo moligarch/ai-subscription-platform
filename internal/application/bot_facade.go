@@ -273,7 +273,7 @@ func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text stri
 		return "You're not in a chat. Send /chat to start one.", nil
 	}
 
-	reply, err := b.ChatUC.SendMessage(ctx, sess.ID, text)
+	reply, err := b.ChatUC.SendChatMessage(ctx, sess.ID, text)
 	if err != nil {
 		// Prefer typed error mapping if your UC exposes it:
 		//   usecase.ErrNoActiveSubscription

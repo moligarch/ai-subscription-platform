@@ -55,7 +55,7 @@ func NewUserSubscription(id, userID string, plan *SubscriptionPlan) (*UserSubscr
 // 		return nil, domain.ErrExpiredSubscription
 // 	}
 // 	if us.RemainingCredits <= 0 {
-// 		return nil, domain.ErrInsufficientCredits
+// 		return nil, domain.ErrInsufficientBalance
 // 	}
 // 	copy := *us
 // 	copy.RemainingCredits--

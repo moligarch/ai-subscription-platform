@@ -7,10 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/logging"
 )
 
 // Compile-time check
@@ -27,26 +29,29 @@ type SubscriptionUseCase interface {
 type subscriptionUC struct {
 	subs  repository.SubscriptionRepository
 	plans repository.SubscriptionPlanRepository
+
+	log *zerolog.Logger
 }
 
-func NewSubscriptionUseCase(subs repository.SubscriptionRepository, plans repository.SubscriptionPlanRepository) *subscriptionUC {
-	return &subscriptionUC{subs: subs, plans: plans}
+func NewSubscriptionUseCase(subs repository.SubscriptionRepository, plans repository.SubscriptionPlanRepository, logger *zerolog.Logger) *subscriptionUC {
+	return &subscriptionUC{subs: subs, plans: plans, log: logger}
 }
 
 func (u *subscriptionUC) Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error) {
+	defer logging.TraceDuration(u.log, "SubscriptionUC.Subscribe")()
 	if strings.TrimSpace(userID) == "" || strings.TrimSpace(planID) == "" {
 		return nil, errors.New("missing user or plan")
 	}
 
 	// Load plan details
-	plan, err := u.plans.FindByID(ctx, planID)
+	plan, err := u.plans.FindByID(ctx, repository.NoTX, planID)
 	if err != nil || plan == nil {
-		return nil, errors.New("plan not found")
+		return nil, domain.ErrNotFound
 	}
 
 	now := time.Now()
 	// Do we already have an active subscription?
-	active, _ := u.subs.FindActiveByUser(ctx, nil, userID)
+	active, _ := u.subs.FindActiveByUser(ctx, repository.NoTX, userID)
 
 	sub := &model.UserSubscription{
 		ID:               uuid.NewString(),
@@ -74,22 +79,25 @@ func (u *subscriptionUC) Subscribe(ctx context.Context, userID, planID string) (
 		}
 	}
 
-	if err := u.subs.Save(ctx, nil, sub); err != nil {
+	if err := u.subs.Save(ctx, repository.NoTX, sub); err != nil {
 		return nil, err
 	}
 	return sub, nil
 }
 
 func (u *subscriptionUC) GetActive(ctx context.Context, userID string) (*model.UserSubscription, error) {
-	return u.subs.FindActiveByUser(ctx, nil, userID)
+	defer logging.TraceDuration(u.log, "SubscriptionUC.GetActive")()
+	return u.subs.FindActiveByUser(ctx, repository.NoTX, userID)
 }
 
 func (u *subscriptionUC) GetReserved(ctx context.Context, userID string) ([]*model.UserSubscription, error) {
-	return u.subs.FindReservedByUser(ctx, nil, userID)
+	defer logging.TraceDuration(u.log, "SubscriptionUC.GetReserved")()
+	return u.subs.FindReservedByUser(ctx, repository.NoTX, userID)
 }
 
 func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error) {
-	s, err := u.subs.FindActiveByUser(ctx, nil, userID)
+	defer logging.TraceDuration(u.log, "SubscriptionUC.DeductCredits")()
+	s, err := u.subs.FindActiveByUser(ctx, repository.NoTX, userID)
 	if err != nil {
 		// map repo not-found to a typed UC error
 		if errors.Is(err, domain.ErrNotFound) {
@@ -112,7 +120,7 @@ func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amoun
 		s.Status = model.SubscriptionStatusFinished
 		s.ExpiresAt = &now
 	}
-	if err := u.subs.Save(ctx, nil, s); err != nil {
+	if err := u.subs.Save(ctx, repository.NoTX, s); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -121,7 +129,8 @@ func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amoun
 // FinishExpired transitions any active subscription whose expires_at <= now to finished.
 // Returns number of subscriptions updated.
 func (u *subscriptionUC) FinishExpired(ctx context.Context) (int, error) {
-	expiring, err := u.subs.FindExpiring(ctx, nil, 0)
+	defer logging.TraceDuration(u.log, "SubscriptionUC.FinishExpired")()
+	expiring, err := u.subs.FindExpiring(ctx, repository.NoTX, 0)
 	if err != nil {
 		return 0, err
 	}
@@ -131,7 +140,7 @@ func (u *subscriptionUC) FinishExpired(ctx context.Context) (int, error) {
 			continue
 		}
 		s.Status = model.SubscriptionStatusFinished
-		if err := u.subs.Save(ctx, nil, s); err != nil {
+		if err := u.subs.Save(ctx, repository.NoTX, s); err != nil {
 			return count, err
 		}
 		count++

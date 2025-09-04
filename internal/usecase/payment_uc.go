@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
@@ -23,7 +24,7 @@ type PaymentUseCase interface {
 	// ConfirmAuto looks up the payment by authority to determine expected amount automatically.
 	ConfirmAuto(ctx context.Context, authority string) (*model.Payment, error)
 	// Totals per period (optional, used by stats/panel)
-	SumByPeriod(ctx context.Context, qx any, period string) (int64, error)
+	SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error)
 }
 
 // Compile-time check
@@ -35,6 +36,8 @@ type paymentUC struct {
 	subs      SubscriptionUseCase
 	purchases repository.PurchaseRepository
 	gateway   adapter.PaymentGateway
+
+	log *zerolog.Logger
 }
 
 func NewPaymentUseCase(
@@ -43,6 +46,7 @@ func NewPaymentUseCase(
 	subs SubscriptionUseCase,
 	purchases repository.PurchaseRepository,
 	gateway adapter.PaymentGateway,
+	logger *zerolog.Logger,
 ) PaymentUseCase {
 	return &paymentUC{
 		payments:  payments,
@@ -50,12 +54,13 @@ func NewPaymentUseCase(
 		subs:      subs,
 		purchases: purchases,
 		gateway:   gateway,
+		log:       logger,
 	}
 }
 
 func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, description string, meta map[string]interface{}) (*model.Payment, string, error) {
 	if userID == "" || planID == "" {
-		return nil, "", errors.New("missing user or plan")
+		return nil, "", domain.ErrInvalidArgument
 	}
 
 	if u.subs != nil {
@@ -64,9 +69,9 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 		}
 	}
 
-	plan, err := u.plans.FindByID(ctx, planID)
+	plan, err := u.plans.FindByID(ctx, repository.NoTX, planID)
 	if err != nil || plan == nil {
-		return nil, "", errors.New("plan not found")
+		return nil, "", domain.ErrNotFound
 	}
 	amount := plan.PriceIRR
 
@@ -96,7 +101,7 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 		p.Meta = meta
 	}
 
-	if err := u.payments.Save(ctx, nil, p); err != nil {
+	if err := u.payments.Save(ctx, repository.NoTX, p); err != nil {
 		return nil, "", err
 	}
 	metrics.IncPayment("initiated")
@@ -108,7 +113,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 		return nil, errors.New("missing authority")
 	}
 
-	p, err := u.payments.FindByAuthority(ctx, nil, authority)
+	p, err := u.payments.FindByAuthority(ctx, repository.NoTX, authority)
 	if err != nil || p == nil {
 		return nil, errors.New("payment not found")
 	}
@@ -122,20 +127,20 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 	ref, err := u.gateway.VerifyPayment(ctx, authority, expectedAmount)
 	if err != nil {
 		// mark failed best-effort
-		_ = u.payments.UpdateStatus(ctx, nil, p.ID, model.PaymentStatusFailed, nil, nil)
+		_ = u.payments.UpdateStatus(ctx, repository.NoTX, p.ID, model.PaymentStatusFailed, nil, nil)
 		metrics.IncPayment("failed")
 		return nil, err
 	}
 
 	now := time.Now()
 	// Idempotent success transition (only one caller wins)
-	updated, err := u.payments.UpdateStatusIfPending(ctx, nil, p.ID, model.PaymentStatusSucceeded, &ref, &now)
+	updated, err := u.payments.UpdateStatusIfPending(ctx, repository.NoTX, p.ID, model.PaymentStatusSucceeded, &ref, &now)
 	if err != nil {
 		return nil, err
 	}
 	if !updated {
 		// Someone else finalized; re-read and move on
-		p, err = u.payments.FindByID(ctx, nil, p.ID)
+		p, err = u.payments.FindByID(ctx, repository.NoTX, p.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -159,7 +164,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 	// Link payment -> subscription
 	p.SubscriptionID = &sub.ID
 	p.UpdatedAt = time.Now()
-	_ = u.payments.Save(ctx, nil, p)
+	_ = u.payments.Save(ctx, repository.NoTX, p)
 
 	// Append purchase (idempotent if DB has UNIQUE(payment_id))
 	pu := &model.Purchase{
@@ -170,7 +175,7 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 		SubscriptionID: sub.ID,
 		CreatedAt:      time.Now(),
 	}
-	_ = u.purchases.Save(ctx, nil, pu)
+	_ = u.purchases.Save(ctx, repository.NoTX, pu)
 	metrics.IncPayment("succeeded")
 	return p, nil
 }
@@ -180,7 +185,7 @@ func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (*model.P
 		return nil, errors.New("missing authority")
 	}
 	// Load payment to discover amount/plan
-	p, err := u.payments.FindByAuthority(ctx, nil, authority)
+	p, err := u.payments.FindByAuthority(ctx, repository.NoTX, authority)
 	if err != nil || p == nil {
 		return nil, errors.New("payment not found")
 	}
@@ -190,13 +195,13 @@ func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (*model.P
 		return p, nil
 	}
 
-	plan, err := u.plans.FindByID(ctx, p.PlanID)
+	plan, err := u.plans.FindByID(ctx, repository.NoTX, p.PlanID)
 	if err != nil || plan == nil {
 		return nil, errors.New("plan not found")
 	}
 	return u.Confirm(ctx, authority, int64(plan.PriceIRR))
 }
 
-func (u *paymentUC) SumByPeriod(ctx context.Context, qx any, period string) (int64, error) {
-	return u.payments.SumByPeriod(ctx, qx, period)
+func (u *paymentUC) SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error) {
+	return u.payments.SumByPeriod(ctx, tx, period)
 }

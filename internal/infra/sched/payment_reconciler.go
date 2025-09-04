@@ -44,7 +44,7 @@ func (w *PaymentReconciler) Start(ctx context.Context) {
 
 func (w *PaymentReconciler) tick(ctx context.Context) {
 	cutoff := time.Now().Add(-w.staleAfter)
-	pending, err := w.payments.ListPendingOlderThan(ctx, nil, cutoff, 200)
+	pending, err := w.payments.ListPendingOlderThan(ctx, repository.NoTX, cutoff, 200)
 	if err != nil {
 		log.Printf("payment-reconciler: list pending error: %v", err)
 		return

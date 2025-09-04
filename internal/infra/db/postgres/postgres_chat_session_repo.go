@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -16,21 +15,21 @@ import (
 	"telegram-ai-subscription/internal/infra/security"
 )
 
-// ChatSessionRepo is the default (and only) chat session repository.
+// chatSessionRepo is the default (and only) chat session repository.
 // It persists messages with optional encryption-at-rest, based on user privacy settings.
-var _ repository.ChatSessionRepository = (*ChatSessionRepo)(nil)
+var _ repository.ChatSessionRepository = (*chatSessionRepo)(nil)
 
-type ChatSessionRepo struct {
+type chatSessionRepo struct {
 	pool          *pgxpool.Pool
 	cache         *redis.ChatCache
 	encryptionSvc *security.EncryptionService
 }
 
-func NewPostgresChatSessionRepo(pool *pgxpool.Pool, cache *redis.ChatCache, encryptionSvc *security.EncryptionService) *ChatSessionRepo {
-	return &ChatSessionRepo{pool: pool, cache: cache, encryptionSvc: encryptionSvc}
+func NewChatSessionRepo(pool *pgxpool.Pool, cache *redis.ChatCache, encryptionSvc *security.EncryptionService) *chatSessionRepo {
+	return &chatSessionRepo{pool: pool, cache: cache, encryptionSvc: encryptionSvc}
 }
 
-func (r *ChatSessionRepo) Save(ctx context.Context, qx any, session *model.ChatSession) error {
+func (r *chatSessionRepo) Save(ctx context.Context, tx repository.Tx, session *model.ChatSession) error {
 	const q = `
 INSERT INTO chat_sessions (id, user_id, model, status, created_at, updated_at)
 VALUES ($1,$2,$3,$4,COALESCE($5,NOW()),COALESCE($6,NOW()))
@@ -39,54 +38,61 @@ ON CONFLICT (id) DO UPDATE SET
   model = EXCLUDED.model,
   status = EXCLUDED.status,
   updated_at = EXCLUDED.updated_at;`
-	var err error
-	switch v := qx.(type) {
-	case pgx.Tx:
-		_, err = v.Exec(ctx, q, session.ID, session.UserID, session.Model, string(session.Status), session.CreatedAt, session.UpdatedAt)
-	case *pgxpool.Conn:
-		_, err = v.Exec(ctx, q, session.ID, session.UserID, session.Model, string(session.Status), session.CreatedAt, session.UpdatedAt)
+	_, err := execSQL(ctx, r.pool, tx, q, session.ID, session.UserID, session.Model, string(session.Status), session.CreatedAt, session.UpdatedAt)
+	switch err {
+	case nil:
+		// Messages are appended separately via SaveMessage. Cache latest session state.
+		if r.cache != nil {
+			_ = r.cache.StoreSession(ctx, session)
+		}
+		return nil
+	case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+		return err
 	default:
-		_, err = r.pool.Exec(ctx, q, session.ID, session.UserID, session.Model, string(session.Status), session.CreatedAt, session.UpdatedAt)
+		return domain.ErrOperationFailed
 	}
-	if err != nil {
-		return fmt.Errorf("save session: %w", err)
-	}
-
-	// Messages are appended separately via SaveMessage. Cache latest session state.
-	if r.cache != nil {
-		_ = r.cache.StoreSession(ctx, session)
-	}
-	return nil
 }
 
-func (r *ChatSessionRepo) SaveMessage(ctx context.Context, qx any, m *model.ChatMessage) error {
+func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error {
 	// Resolve user_id from session (so model.ChatMessage doesn't need UserID field)
 	const qUserFromSess = `SELECT user_id FROM chat_sessions WHERE id=$1;`
 	var userID string
-	if err := r.pool.QueryRow(ctx, qUserFromSess, m.SessionID).Scan(&userID); err != nil {
-		if err == pgx.ErrNoRows {
-			return domain.ErrNotFound
-		}
-		return fmt.Errorf("session->user lookup: %w", err)
+	row, err := pickRow(ctx, r.pool, tx, qUserFromSess, m.SessionID)
+	if err != nil {
+		return err
+	}
+	if err := row.Scan(&userID); err != nil {
+		return domain.ErrReadDatabaseRow
 	}
 
 	// read user privacy from users table
 	const qPrivacy = `SELECT data_encrypted, allow_message_storage FROM users WHERE id = $1;`
 	var dataEncrypted, allowStore bool
-	if err := r.pool.QueryRow(ctx, qPrivacy, userID).Scan(&dataEncrypted, &allowStore); err != nil {
-		return fmt.Errorf("privacy read: %w", err)
+	rows, err := pickRow(ctx, r.pool, tx, qPrivacy, userID)
+	if err != nil {
+		switch err {
+		case pgx.ErrNoRows:
+			return domain.ErrNotFound
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+			return err
+		default:
+			return domain.ErrOperationFailed
+		}
 	}
+	if err := rows.Scan(&dataEncrypted, &allowStore); err != nil {
+		return domain.ErrReadDatabaseRow
+	}
+
 	if !allowStore {
 		return nil // do not store messages at all
 	}
 
 	payload := m.Content
 	encFlag := false
-	var err error
 	if dataEncrypted {
 		payload, err = r.encryptionSvc.Encrypt(m.Content)
 		if err != nil {
-			return fmt.Errorf("encrypt msg: %w", err)
+			return domain.ErrEncryptionFailed
 		}
 		encFlag = true
 	}
@@ -94,50 +100,51 @@ func (r *ChatSessionRepo) SaveMessage(ctx context.Context, qx any, m *model.Chat
 	const q = `
 INSERT INTO chat_messages (session_id, role, content, tokens, encrypted, created_at)
 VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()));`
-	switch v := qx.(type) {
-	case pgx.Tx:
-		_, err = v.Exec(ctx, q, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
-	case *pgxpool.Conn:
-		_, err = v.Exec(ctx, q, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
+
+	_, err = execSQL(ctx, r.pool, tx, q, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
+	switch err {
+	case nil:
+		return nil
+	case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+		return err
 	default:
-		_, err = r.pool.Exec(ctx, q, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
+		return domain.ErrOperationFailed
 	}
-	return err
 }
 
-func (r *ChatSessionRepo) Delete(ctx context.Context, qx any, id string) error {
+func (r *chatSessionRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
 	const q = `DELETE FROM chat_sessions WHERE id = $1;`
-	var err error
-	switch v := qx.(type) {
-	case pgx.Tx:
-		_, err = v.Exec(ctx, q, id)
-	case *pgxpool.Conn:
-		_, err = v.Exec(ctx, q, id)
+	_, err := execSQL(ctx, r.pool, tx, q, id)
+	switch err {
+	case nil:
+		return nil
+	case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+		return err
 	default:
-		_, err = r.pool.Exec(ctx, q, id)
+		return domain.ErrOperationFailed
 	}
-	return err
 }
 
-func (r *ChatSessionRepo) FindActiveByUser(ctx context.Context, qx any, userID string) (*model.ChatSession, error) {
+func (r *chatSessionRepo) FindActiveByUser(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error) {
 	const q = `SELECT id FROM chat_sessions WHERE user_id=$1 AND status='active' ORDER BY created_at DESC LIMIT 1;`
-	row := pickRow(r.pool, qx, q, userID)
-	var id string
-	if err := row.Scan(&id); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, domain.ErrNotFound
-		}
+	row, err := pickRow(ctx, r.pool, nil, q, userID) // Read operation outside transaction
+	if err != nil {
 		return nil, err
 	}
-	return r.FindByID(ctx, qx, id)
+
+	var id string
+	if err := row.Scan(&id); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return r.FindByID(ctx, tx, id)
 }
 
-func (r *ChatSessionRepo) ListByUser(ctx context.Context, qx any, userID string, offset, limit int) ([]*model.ChatSession, error) {
+func (r *chatSessionRepo) ListByUser(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error) {
 	if offset < 0 {
 		offset = 0
 	}
 
-	base := `
+	q := `
 SELECT s.id, s.user_id, s.model, s.status, s.created_at, s.updated_at,
        fm.role, fm.content, fm.tokens, fm.created_at
 FROM chat_sessions s
@@ -152,22 +159,24 @@ WHERE s.user_id = $1
 ORDER BY s.created_at DESC
 OFFSET $2
 `
-
 	var rows pgx.Rows
 	var err error
-
 	if limit > 0 {
-		q := base + " LIMIT $3;"
-		// if you use a helper:
-		// rows, err = r.queryRows(ctx, qx, q, userID, offset, limit)
-		rows, err = r.pool.Query(ctx, q, userID, offset, limit)
+		q += " LIMIT $3;"
+		rows, err = queryRows(ctx, r.pool, nil, q, userID, offset, limit)
 	} else {
-		q := base + ";"
-		// rows, err = r.queryRows(ctx, qx, q, userID, offset)
-		rows, err = r.pool.Query(ctx, q, userID, offset)
+		q += ";"
+		rows, err = queryRows(ctx, r.pool, nil, q, userID, offset)
 	}
 	if err != nil {
-		return nil, err
+		switch err {
+		case pgx.ErrNoRows:
+			return nil, domain.ErrNotFound
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+			return nil, err
+		default:
+			return nil, domain.ErrOperationFailed
+		}
 	}
 	defer rows.Close()
 
@@ -182,41 +191,56 @@ OFFSET $2
 			&s.ID, &s.UserID, &s.Model, &s.Status, &s.CreatedAt, &s.UpdatedAt,
 			&firstRole, &firstContent, &firstTokens, &firstCreated,
 		); err != nil {
-			return nil, err
+			return nil, domain.ErrReadDatabaseRow
+		}
+		plain, err := r.encryptionSvc.Decrypt(firstContent.String)
+		if err != nil {
+			return nil, domain.ErrDecryptionFailed
 		}
 
 		if firstRole.Valid && firstContent.Valid {
 			s.Messages = append(s.Messages, model.ChatMessage{
 				SessionID: s.ID,
 				Role:      firstRole.String,
-				Content:   firstContent.String,
+				Content:   plain,
 				Tokens:    int(firstTokens.Int32),
 				Timestamp: firstCreated.Time,
 			})
 		}
 		out = append(out, &s)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return out, nil
 }
 
-func (r *ChatSessionRepo) FindByID(ctx context.Context, qx any, id string) (*model.ChatSession, error) {
+func (r *chatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error) {
 	const qs = `SELECT id, user_id, model, status, created_at, updated_at FROM chat_sessions WHERE id=$1;`
-	row := pickRow(r.pool, qx, qs, id)
+	row, err := pickRow(ctx, r.pool, nil, qs, id)
+	if err != nil {
+		return nil, err
+	}
+
 	var s model.ChatSession
 	var status string
 	if err := row.Scan(&s.ID, &s.UserID, &s.Model, &status, &s.CreatedAt, &s.UpdatedAt); err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, domain.ErrNotFound
-		}
-		return nil, fmt.Errorf("scan session: %w", err)
+		return nil, domain.ErrReadDatabaseRow
 	}
 	s.Status = model.ChatSessionStatus(status)
 
 	// load messages
 	const qm = `SELECT role, content, tokens, encrypted, created_at FROM chat_messages WHERE session_id=$1 ORDER BY created_at ASC;`
-	rows, err := r.queryRows(ctx, qx, qm, id)
+	rows, err := queryRows(ctx, r.pool, nil, qm, id)
 	if err != nil {
-		return nil, fmt.Errorf("query messages: %w", err)
+		switch err {
+		case pgx.ErrNoRows:
+			return nil, domain.ErrNotFound
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+			return nil, err
+		default:
+			return nil, domain.ErrOperationFailed
+		}
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -226,12 +250,12 @@ func (r *ChatSessionRepo) FindByID(ctx context.Context, qx any, id string) (*mod
 		var enc sql.NullBool
 		var ts time.Time
 		if err := rows.Scan(&role, &content, &tokens, &enc, &ts); err != nil {
-			return nil, fmt.Errorf("scan msg: %w", err)
+			return nil, domain.ErrReadDatabaseRow
 		}
 		if enc.Valid && enc.Bool {
 			plain, err := r.encryptionSvc.Decrypt(content)
 			if err != nil {
-				return nil, fmt.Errorf("decrypt msg: %w", err)
+				return nil, domain.ErrDecryptionFailed
 			}
 			content = plain
 		}
@@ -244,7 +268,7 @@ func (r *ChatSessionRepo) FindByID(ctx context.Context, qx any, id string) (*mod
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows err: %w", err)
+		return nil, domain.ErrReadDatabaseRow
 	}
 	// cache best-effort
 	if r.cache != nil {
@@ -253,22 +277,21 @@ func (r *ChatSessionRepo) FindByID(ctx context.Context, qx any, id string) (*mod
 	return &s, nil
 }
 
-func (r *ChatSessionRepo) UpdateStatus(ctx context.Context, qx any, sessionID string, status model.ChatSessionStatus) error {
+func (r *chatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
 	const q = `UPDATE chat_sessions SET status=$2, updated_at=NOW() WHERE id=$1;`
-	switch v := qx.(type) {
-	case pgx.Tx:
-		_, err := v.Exec(ctx, q, sessionID, string(status))
-		return err
-	case *pgxpool.Conn:
-		_, err := v.Exec(ctx, q, sessionID, string(status))
+
+	_, err := execSQL(ctx, r.pool, tx, q, sessionID, string(status))
+	switch err {
+	case nil:
+		return nil
+	case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
 		return err
 	default:
-		_, err := r.pool.Exec(ctx, q, sessionID, string(status))
-		return err
+		return domain.ErrOperationFailed
 	}
 }
 
-func (r *ChatSessionRepo) CleanupOldMessages(ctx context.Context, userID string, retentionDays int) (int64, error) {
+func (r *chatSessionRepo) CleanupOldMessages(ctx context.Context, userID string, retentionDays int) (int64, error) {
 	const q = `
 DELETE FROM chat_messages
  WHERE session_id IN (SELECT id FROM chat_sessions WHERE user_id = $1)
@@ -278,15 +301,4 @@ DELETE FROM chat_messages
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
-}
-
-func (r *ChatSessionRepo) queryRows(ctx context.Context, qx any, sql string, args ...any) (pgx.Rows, error) {
-	switch v := qx.(type) {
-	case pgx.Tx:
-		return v.Query(ctx, sql, args...)
-	case *pgxpool.Conn:
-		return v.Query(ctx, sql, args...)
-	default:
-		return r.pool.Query(ctx, sql, args...)
-	}
 }
