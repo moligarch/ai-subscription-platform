@@ -753,7 +753,8 @@ type MockModelPricingRepo struct {
 
 	GetByModelNameFunc func(ctx context.Context, model string) (*model.ModelPricing, error)
 	ListActiveFunc     func(ctx context.Context) ([]*model.ModelPricing, error)
-	SaveFunc           func(ctx context.Context, p *model.ModelPricing) error
+	CreateFunc         func(ctx context.Context, p *model.ModelPricing) error
+	UpdateFunc         func(ctx context.Context, p *model.ModelPricing) error
 }
 
 var _ repository.ModelPricingRepository = (*MockModelPricingRepo)(nil)
@@ -800,14 +801,28 @@ func (r *MockModelPricingRepo) ListActive(ctx context.Context, tx repository.Tx)
 	return out, nil
 }
 
-func (r *MockModelPricingRepo) Save(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
-	if r.SaveFunc != nil {
-		return r.SaveFunc(ctx, p)
+func (r *MockModelPricingRepo) Create(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
+	if r.CreateFunc != nil {
+		return r.CreateFunc(ctx, p)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if p.ID == "" {
 		p.ID = uuid.NewString()
+	}
+	cp := *p
+	r.byModel[strings.ToLower(p.ModelName)] = &cp
+	return nil
+}
+
+func (r *MockModelPricingRepo) Update(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
+	if r.UpdateFunc != nil {
+		return r.UpdateFunc(ctx, p)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.byModel[strings.ToLower(p.ModelName)]; !ok {
+		return errors.New("not found")
 	}
 	cp := *p
 	r.byModel[strings.ToLower(p.ModelName)] = &cp

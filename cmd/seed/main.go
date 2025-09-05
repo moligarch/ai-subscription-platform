@@ -103,10 +103,10 @@ func main() {
 	}
 
 	for _, pr := range seedPrices {
-		if err := prices.Save(ctx, repository.NoTX, &pr); err != nil {
-			log.Printf("pricing upsert %s: %v", pr.ModelName, err)
+		if err := prices.Create(ctx, repository.NoTX, &pr); err != nil {
+			log.Printf("pricing create %s: %v", pr.ModelName, err)
 		} else {
-			log.Printf("pricing upserted: %s", pr.ModelName)
+			log.Printf("pricing not created: %s", pr.ModelName)
 		}
 	}
 

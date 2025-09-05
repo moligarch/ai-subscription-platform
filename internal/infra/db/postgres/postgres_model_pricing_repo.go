@@ -1,4 +1,3 @@
-// File: internal/infra/db/postgres/postgres_model_pricing_repo.go
 package postgres
 
 import (
@@ -32,12 +31,7 @@ SELECT id, model_name, input_token_price_micros, output_token_price_micros, acti
  LIMIT 1;`
 	row, err := pickRow(ctx, r.pool, tx, q, name)
 	if err != nil {
-		switch err {
-		case domain.ErrNotFound:
-			return nil, domain.ErrNotFound
-		default:
-			return nil, domain.ErrOperationFailed
-		}
+		return nil, domain.ErrNotFound
 	}
 	var p model.ModelPricing
 	if err := row.Scan(&p.ID, &p.ModelName, &p.InputTokenPriceMicros, &p.OutputTokenPriceMicros, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
@@ -46,26 +40,32 @@ SELECT id, model_name, input_token_price_micros, output_token_price_micros, acti
 	return &p, nil
 }
 
-func (r *modelPricingRepo) Save(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
+func (r *modelPricingRepo) Create(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
 	if p.ID == "" {
 		p.ID = uuid.NewString()
 	}
 	now := time.Now()
+	p.CreatedAt = now
 	p.UpdatedAt = now
 	const q = `
 INSERT INTO model_pricing (id, model_name, input_token_price_micros, output_token_price_micros, active, created_at, updated_at)
-VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()),$7)
-ON CONFLICT (id) DO UPDATE SET
-  model_name=EXCLUDED.model_name,
-  input_token_price_micros=EXCLUDED.input_token_price_micros,
-  output_token_price_micros=EXCLUDED.output_token_price_micros,
-  active=EXCLUDED.active,
-  updated_at=EXCLUDED.updated_at;`
+VALUES ($1, $2, $3, $4, $5, $6, $7);`
 	_, err := execSQL(ctx, r.pool, tx, q, p.ID, p.ModelName, p.InputTokenPriceMicros, p.OutputTokenPriceMicros, p.Active, p.CreatedAt, p.UpdatedAt)
-	if err != nil {
-		return domain.ErrOperationFailed
-	}
-	return nil
+	return err
+}
+
+func (r *modelPricingRepo) Update(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
+	p.UpdatedAt = time.Now()
+	const q = `
+UPDATE model_pricing SET
+  model_name = $2, -- Also allow updating the name
+  input_token_price_micros = $3,
+  output_token_price_micros = $4,
+  active = $5,
+  updated_at = $6
+WHERE id = $1;`
+	_, err := execSQL(ctx, r.pool, tx, q, p.ID, p.ModelName, p.InputTokenPriceMicros, p.OutputTokenPriceMicros, p.Active, p.UpdatedAt)
+	return err
 }
 
 func (r *modelPricingRepo) ListActive(ctx context.Context, tx repository.Tx) ([]*model.ModelPricing, error) {
