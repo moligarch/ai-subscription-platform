@@ -111,13 +111,13 @@ func TestMain(m *testing.M) {
 	os.Exit(exitCode)
 }
 
-// cleanup helper remains the same
 func cleanup(t *testing.T) {
 	t.Helper()
 	_, err := testPool.Exec(context.Background(), `
 		TRUNCATE 
 			users, subscription_plans, user_subscriptions, payments, purchases, 
-			chat_sessions, chat_messages, ai_jobs, subscription_notifications
+			chat_sessions, chat_messages, ai_jobs, subscription_notifications,
+			model_pricing
 		RESTART IDENTITY CASCADE
 	`)
 	if err != nil {

@@ -103,7 +103,9 @@ func (r *subscriptionRepo) FindExpiring(ctx context.Context, tx repository.Tx, w
 	const q = `
 SELECT id, user_id, plan_id, created_at, scheduled_start_at, start_at, expires_at, remaining_credits, status
   FROM user_subscriptions
- WHERE status='active' AND expires_at <= NOW() + ($1::int * INTERVAL '1 day')
+ WHERE status='active' 
+   AND expires_at > NOW() 
+   AND expires_at <= NOW() + ($1::int * INTERVAL '1 day')
  ORDER BY expires_at ASC;`
 	rows, err := queryRows(ctx, r.pool, nil, q, withinDays)
 	if err != nil {
