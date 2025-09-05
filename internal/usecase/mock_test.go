@@ -902,6 +902,17 @@ func (r *MockChatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id
 	return nil, nil
 }
 
+func (r *MockChatSessionRepo) FindUserBySessionID(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error) {
+	s, err := r.FindByID(ctx, tx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var user model.User
+	user.ID = s.UserID
+	return &user, nil
+}
+
 func (r *MockChatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
 	if r.UpdateStatusFunc != nil {
 		return r.UpdateStatusFunc(ctx, tx, sessionID, status)
