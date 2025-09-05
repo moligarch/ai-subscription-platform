@@ -8,6 +8,7 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/logging"
 
+	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 )
 
@@ -24,41 +25,52 @@ type UserUseCase interface {
 
 type userUC struct {
 	users repository.UserRepository
-
-	log *zerolog.Logger
+	tm    repository.TransactionManager
+	log   *zerolog.Logger
 }
 
-func NewUserUseCase(users repository.UserRepository, logger *zerolog.Logger) *userUC {
+func NewUserUseCase(users repository.UserRepository, tm repository.TransactionManager, logger *zerolog.Logger) *userUC {
 	return &userUC{
 		users: users,
+		tm:    tm,
 		log:   logger,
 	}
 }
 
 func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error) {
 	defer logging.TraceDuration(u.log, "UserUC.RegisterOrFetch")()
-	usr, err := u.users.FindByTelegramID(ctx, repository.NoTX, tgID)
-	if err == nil {
-		// update username/last_active if changed
-		if usr.Username != username && username != "" {
-			usr.Username = username
+
+	var user *model.User
+	txOpts := pgx.TxOptions{IsoLevel: pgx.Serializable}
+	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
+		usr, err := u.users.FindByTelegramID(ctx, tx, tgID)
+		if err == nil {
+			// Found existing user
+			if usr.Username != username && username != "" {
+				usr.Username = username
+			}
+			usr.Touch()
+			if err = u.users.Save(ctx, tx, usr); err != nil {
+				u.log.Error().Err(err).Msg("Failed to update user")
+				return err
+			}
+			user = usr
+			return nil
 		}
-		usr.Touch()
-		err = u.users.Save(ctx, repository.NoTX, usr)
+
+		// Not found -> create new user
+		nu, err := model.NewUser("", tgID, username)
 		if err != nil {
-			u.log.Error().Err(err).Msg("Failed to update user")
+			return err
 		}
-		return usr, nil
-	}
-	// not found -> create
-	nu, e := model.NewUser("", tgID, username)
-	if e != nil {
-		return nil, e
-	}
-	if err := u.users.Save(ctx, repository.NoTX, nu); err != nil {
-		return nil, err
-	}
-	return nu, nil
+		if err := u.users.Save(ctx, tx, nu); err != nil {
+			return err
+		}
+		user = nu
+		return nil
+	})
+
+	return user, err
 }
 
 func (u *userUC) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {

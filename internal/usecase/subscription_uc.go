@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain"
@@ -30,11 +31,22 @@ type subscriptionUC struct {
 	subs  repository.SubscriptionRepository
 	plans repository.SubscriptionPlanRepository
 
+	tm  repository.TransactionManager
 	log *zerolog.Logger
 }
 
-func NewSubscriptionUseCase(subs repository.SubscriptionRepository, plans repository.SubscriptionPlanRepository, logger *zerolog.Logger) *subscriptionUC {
-	return &subscriptionUC{subs: subs, plans: plans, log: logger}
+func NewSubscriptionUseCase(
+	subs repository.SubscriptionRepository,
+	plans repository.SubscriptionPlanRepository,
+	tm repository.TransactionManager,
+	logger *zerolog.Logger,
+) *subscriptionUC {
+	return &subscriptionUC{
+		subs:  subs,
+		plans: plans,
+		tm:    tm,
+		log:   logger,
+	}
 }
 
 func (u *subscriptionUC) Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error) {
@@ -43,46 +55,47 @@ func (u *subscriptionUC) Subscribe(ctx context.Context, userID, planID string) (
 		return nil, errors.New("missing user or plan")
 	}
 
-	// Load plan details
-	plan, err := u.plans.FindByID(ctx, repository.NoTX, planID)
-	if err != nil || plan == nil {
-		return nil, domain.ErrNotFound
-	}
-
-	now := time.Now()
-	// Do we already have an active subscription?
-	active, _ := u.subs.FindActiveByUser(ctx, repository.NoTX, userID)
-
-	sub := &model.UserSubscription{
-		ID:               uuid.NewString(),
-		UserID:           userID,
-		PlanID:           planID,
-		CreatedAt:        now,
-		RemainingCredits: plan.Credits,
-		Status:           model.SubscriptionStatusReserved, // default; may flip to active
-	}
-
-	if active == nil {
-		// No active → activate immediately
-		sub.Status = model.SubscriptionStatusActive
-		sub.StartAt = &now
-		exp := now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
-		sub.ExpiresAt = &exp
-	} else {
-		// Already active → reserve one (schedule if we know current expiry)
-		if active.ExpiresAt != nil {
-			sched := *active.ExpiresAt
-			sub.ScheduledStartAt = &sched
-			// Optionally compute a tentative expiry for visibility:
-			exp := sched.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
-			sub.ExpiresAt = &exp
+	var sub *model.UserSubscription
+	// Use a serializable transaction to prevent race conditions
+	txOpts := pgx.TxOptions{IsoLevel: pgx.Serializable}
+	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
+		plan, err := u.plans.FindByID(ctx, tx, planID)
+		if err != nil {
+			return domain.ErrNotFound
 		}
-	}
 
-	if err := u.subs.Save(ctx, repository.NoTX, sub); err != nil {
-		return nil, err
-	}
-	return sub, nil
+		now := time.Now()
+		active, _ := u.subs.FindActiveByUser(ctx, tx, userID)
+
+		newSub := &model.UserSubscription{
+			ID:               uuid.NewString(),
+			UserID:           userID,
+			PlanID:           planID,
+			CreatedAt:        now,
+			RemainingCredits: plan.Credits,
+			Status:           model.SubscriptionStatusReserved,
+		}
+
+		if active == nil {
+			newSub.Status = model.SubscriptionStatusActive
+			newSub.StartAt = &now
+			exp := now.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+			newSub.ExpiresAt = &exp
+		} else if active.ExpiresAt != nil {
+			sched := *active.ExpiresAt
+			newSub.ScheduledStartAt = &sched
+			exp := sched.Add(time.Duration(plan.DurationDays) * 24 * time.Hour)
+			newSub.ExpiresAt = &exp
+		}
+
+		if err := u.subs.Save(ctx, tx, newSub); err != nil {
+			return err
+		}
+		sub = newSub // Assign to the outer scope variable
+		return nil
+	})
+
+	return sub, err
 }
 
 func (u *subscriptionUC) GetActive(ctx context.Context, userID string) (*model.UserSubscription, error) {
