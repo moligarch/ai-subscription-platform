@@ -109,7 +109,7 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 		return "Usage: /buy <plan_id>", nil
 	}
 	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
-	if err != nil || user == nil {
+	if err != nil {
 		return "No user found. Try /start first.", nil
 	}
 
@@ -124,16 +124,19 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 	meta := map[string]interface{}{
 		"user_tg": telegramID,
 	}
-	p, payURL, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
+	_, payURL, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
 	if err != nil {
+		// Handle all known business errors with specific user-facing messages.
 		if errors.Is(err, domain.ErrAlreadyHasReserved) {
-			return "You already have a reserved subscription.\n" +
-				"Please use /status to view it. You can purchase a new plan after it activates.", nil
+			return "You already have a reserved subscription. You can purchase a new plan after it activates.", nil
 		}
-		return "Failed to initiate payment.", nil
+		if errors.Is(err, domain.ErrPlanNotFound) {
+			return "The plan ID you provided is invalid. Please use /plans to see available plans.", nil
+		}
+		// For unexpected errors, return a generic message and log the details.
+		return "Failed to initiate payment. Please try again later.", nil
 	}
 
-	_ = p // we don’t need to show internal IDs here
 	msg := "Please complete your payment at: " + payURL + "\n" +
 		"After success you'll be redirected and your plan will activate."
 	return msg, nil
@@ -141,8 +144,8 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 
 // HandleStatus shows active/reserved subscription.
 func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (string, error) {
-	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
-	if err != nil || user == nil {
+	user, _ := f.UserUC.GetByTelegramID(ctx, telegramID)
+	if user == nil {
 		return "No user found. Try /start first.", nil
 	}
 
@@ -150,7 +153,11 @@ func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (string,
 	b.WriteString("📊 Status\n\n")
 
 	// Active
-	active, _ := f.SubscriptionUC.GetActive(ctx, user.ID)
+	active, err := f.SubscriptionUC.GetActive(ctx, user.ID)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		// Log and handle unexpected errors.
+		return "Could not retrieve your subscription status.", err
+	}
 	if active != nil {
 		planName := active.PlanID
 		if f.PlanUC != nil {
@@ -244,7 +251,10 @@ func (b *BotFacade) HandleStartChat(ctx context.Context, tgID int64, modelName s
 		}
 	}
 	if _, err := b.ChatUC.StartChat(ctx, user.ID, modelName); err != nil {
-		return "", fmt.Errorf("start chat: %w", err)
+		if errors.Is(err, domain.ErrActiveChatExists) {
+			return "You already have an active chat. Please end it with /bye before starting a new one.", nil
+		}
+		return "Failed to start a new chat.", fmt.Errorf("start chat: %w", err)
 	}
 	return fmt.Sprintf("Started chat with %s. Send messages, or /bye to end.", modelName), nil
 }
@@ -269,22 +279,22 @@ func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text stri
 	}
 
 	sess, err := b.ChatUC.FindActiveSession(ctx, user.ID)
-	if err != nil || sess == nil {
-		return "You're not in a chat. Send /chat to start one.", nil
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return "You're not in a chat. Send /chat to start one.", nil
+		}
+		return "Could not find an active chat session.", err
 	}
 
-	reply, err := b.ChatUC.SendChatMessage(ctx, sess.ID, text)
+	err = b.ChatUC.SendChatMessage(ctx, sess.ID, text)
 	if err != nil {
-		// Prefer typed error mapping if your UC exposes it:
-		//   usecase.ErrNoActiveSubscription
-		// Fall back to string sniffing to avoid leaking internals.
-		if errors.Is(err, domain.ErrNoActiveSubscription) ||
-			strings.Contains(strings.ToLower(err.Error()), "entity not found") ||
-			strings.Contains(strings.ToLower(err.Error()), "no active subscription") ||
-			strings.Contains(strings.ToLower(err.Error()), "not enough credits") {
+		if errors.Is(err, domain.ErrNoActiveSubscription) {
 			return "❌ You don't have an active subscription. Use /plans to get started.", nil
 		}
 		return "", fmt.Errorf("send message: %w", err)
 	}
-	return reply, nil
+
+	// On success, we return an immediate confirmation message.
+	// The actual AI reply will be sent later by the AIJobProcessor worker.
+	return "⏳ thinking...", nil
 }

@@ -17,6 +17,8 @@ var (
 
 	ErrEncryptionFailed = errors.New("failed to encrypt content")
 	ErrDecryptionFailed = errors.New("failed to decrypt content")
+
+	ErrPlanNotFound = errors.New("plan not found")
 )
 
 // Chat related error

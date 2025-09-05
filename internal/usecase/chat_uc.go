@@ -2,11 +2,11 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain"
@@ -14,7 +14,6 @@ import (
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/logging"
-	"telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
 )
 
@@ -30,7 +29,7 @@ type HistoryItem struct {
 
 type ChatUseCase interface {
 	StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error)
-	SendChatMessage(ctx context.Context, sessionID, userMessage string) (reply string, err error)
+	SendChatMessage(ctx context.Context, sessionID, userMessage string) (err error)
 	EndChat(ctx context.Context, sessionID string) error
 	FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error)
 	ListModels(ctx context.Context) ([]string, error)
@@ -42,25 +41,29 @@ type ChatUseCase interface {
 
 type chatUC struct {
 	sessions repository.ChatSessionRepository
+	jobs     repository.AIJobRepository
 	ai       adapter.AIServiceAdapter
 	subs     SubscriptionUseCase
 	devMode  bool
 	prices   repository.ModelPricingRepository
 
 	lock red.Locker
+	tm   repository.TransactionManager
 	log  *zerolog.Logger
 }
 
 func NewChatUseCase(
 	sessions repository.ChatSessionRepository,
+	jobs repository.AIJobRepository,
 	ai adapter.AIServiceAdapter,
 	subs SubscriptionUseCase,
 	locker red.Locker,
+	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 	devMode bool,
 	prices repository.ModelPricingRepository,
 ) *chatUC {
-	return &chatUC{sessions: sessions, ai: ai, subs: subs, lock: locker, log: logger, devMode: devMode, prices: prices}
+	return &chatUC{sessions: sessions, jobs: jobs, ai: ai, subs: subs, lock: locker, tm: tm, log: logger, devMode: devMode, prices: prices}
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
@@ -89,179 +92,58 @@ func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*mode
 	return s, nil
 }
 
-func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage string) (string, error) {
+func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage string) (err error) {
 	defer logging.TraceDuration(c.log, "ChatUC.SendChatMessage")()
 
 	s, err := c.sessions.FindByID(ctx, repository.NoTX, sessionID)
 	if err != nil {
-		return "", domain.ErrNotFound
+		return domain.ErrNotFound
 	}
-	var pricing *model.ModelPricing
-	pr, err := c.prices.GetByModelName(ctx, repository.NoTX, s.Model)
-	if err != nil {
-		return "⚠️ در حال حاضر امکان استفاده از این مدل وجود ندارد.", domain.ErrModelPricingMissing
-	}
-	pricing = pr
 
 	if s.Status != model.ChatSessionActive {
-		return "", domain.ErrNoActiveChat
+		return domain.ErrNoActiveChat
 	}
 	userMessage = strings.TrimSpace(userMessage)
 	if userMessage == "" {
-		return "", domain.ErrInvalidArgument
+		return domain.ErrInvalidArgument
 	}
 
-	// Provider "guess" (for logging only; no behavior change)
-	providerGuess := func(m string) string {
-		l := strings.ToLower(m)
-		if strings.HasPrefix(l, "gpt-") {
-			return "openai"
-		}
-		if strings.HasPrefix(l, "gemini") {
-			return "gemini"
-		}
-		return "default"
-	}(s.Model)
-
-	// ---------- Phase A: pre-send affordability check + pre-token count ----------
-	var (
-		balanceMicros int64
-		promptTokens  int // saved on the user message
-	)
-
-	if !c.devMode {
-		active, err := c.subs.GetActive(ctx, s.UserID)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				return "", domain.ErrNoActiveSubscription
-			}
-			return "", domain.ErrOperationFailed
-		}
-		// if active == nil {
-		// 	return "❌ شما هیچ اشتراک فعالی ندارید. برای خرید اشتراک می‌تونید از /plan استفاده کنید.", nil
-		// }
-		balanceMicros = active.RemainingCredits
-
-		// Build history INCLUDING this new user message (but don't persist yet).
-		msgsHist := s.GetRecentMessages(15)
-		adapterMsgs := make([]adapter.Message, 0, len(msgsHist)+1)
-		for _, m := range msgsHist {
-			adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
-		}
-		adapterMsgs = append(adapterMsgs, adapter.Message{Role: "user", Content: userMessage})
-
-		// Count tokens for the full prompt we would send.
-		preStart := time.Now()
-		if n, err := c.ai.CountTokens(ctx, s.Model, adapterMsgs); err == nil {
-			promptTokens = n
-		} else {
-			// Fallback: rough estimate on the new text (~4 chars/token).
-			rl := len([]rune(userMessage))
-			if rl < 0 {
-				rl = 0
-			}
-			promptTokens = rl/4 + 1
-			c.log.Warn().
-				Str("event", "chat.precheck").
-				Str("user_id", s.UserID).
-				Str("session_id", s.ID).
-				Str("model", s.Model).
-				Str("provider_guess", providerGuess).
-				Str("action", "proceed_no_count").
-				Err(err).
-				Int("latency_ms", int(time.Since(preStart)/time.Millisecond)).
-				Msg("CountTokens failed; proceeding with heuristic")
-		}
-
-		requiredMicros := int64(promptTokens) * pricing.InputTokenPriceMicros
-		action := "proceed"
-		if requiredMicros > balanceMicros {
-			action = "block"
-		}
-
-		// Structured pre-check log
-		c.log.Info().
-			Str("event", "chat.precheck").
-			Str("user_id", s.UserID).
-			Str("session_id", s.ID).
-			Str("model", s.Model).
-			Str("provider_guess", providerGuess).
-			Int("prompt_tokens_est", promptTokens).
-			Int64("required_micro", requiredMicros).
-			Int64("balance_micro", balanceMicros).
-			Str("action", action).
-			Msg("")
-
-		if action == "block" {
-			metrics.PrecheckBlocked(providerGuess, s.Model)
-
-			return "", domain.ErrInsufficientBalance
-		}
-	}
-
-	// ---------- Persist user message (store pre-count tokens) ----------
-	s.AddMessage("user", userMessage, promptTokens)
-	if err := c.sessions.SaveMessage(ctx, repository.NoTX, &s.Messages[len(s.Messages)-1]); err != nil {
-		return "", err
-	}
-
-	// ---------- Prepare AI context (now includes the just-saved user message) ----------
-	msgs := s.GetRecentMessages(15)
-	adapterMsgs := make([]adapter.Message, 0, len(msgs))
-	for _, m := range msgs {
-		adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
-	}
-
-	// ---------- Call AI and get precise usage ----------
-	callStart := time.Now()
-	reply, usage, err := c.ai.ChatWithUsage(ctx, s.Model, adapterMsgs)
-	if err != nil {
-		metrics.ObserveChatUsage(providerGuess, s.Model, 0, 0, 0, 0, int(time.Since(callStart)/time.Millisecond), false)
-		return "", err
-	}
-
-	// ---------- Persist assistant message with completion tokens ----------
-	s.AddMessage("assistant", reply, usage.CompletionTokens)
-	if err := c.sessions.SaveMessage(ctx, repository.NoTX, &s.Messages[len(s.Messages)-1]); err != nil {
-		return "", err
-	}
-	s.UpdatedAt = time.Now()
-	_ = c.sessions.Save(ctx, repository.NoTX, s)
-
-	// ---------- Post-call: exact deduction based on usage + structured log ----------
-	var spent int64
-	if !c.devMode && pricing != nil {
-		spent = int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
-			int64(usage.CompletionTokens)*pricing.OutputTokenPriceMicros
-		if spent > 0 {
-			if _, err = c.subs.DeductCredits(ctx, s.UserID, spent); err != nil {
-				return "", err
+	// This whole block is now a single, fast transaction
+	return c.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		// Pre-check for active subscription (no credit check yet, worker will do that)
+		if !c.devMode {
+			if _, err := c.subs.GetActive(ctx, s.UserID); err != nil {
+				return domain.ErrNoActiveSubscription
 			}
 		}
-	}
-	metrics.ObserveChatUsage(
-		providerGuess, s.Model,
-		usage.PromptTokens,
-		usage.CompletionTokens,
-		usage.TotalTokens,
-		spent, // micro-credits
-		int(time.Since(callStart)/time.Millisecond),
-		true, // success=true
-	)
-	c.log.Info().
-		Str("event", "chat.usage").
-		Str("user_id", s.UserID).
-		Str("session_id", s.ID).
-		Str("model", s.Model).
-		Str("provider_guess", providerGuess).
-		Int("tokens_in", usage.PromptTokens).
-		Int("tokens_out", usage.CompletionTokens).
-		Int("tokens_total", usage.TotalTokens).
-		Int64("cost_micro", spent).
-		Int("latency_ms", int(time.Since(callStart)/time.Millisecond)).
-		Msg("")
 
-	return reply, nil
+		// 1. Save user message
+		// Note: We create a unique ID for the message here
+		userMsg := model.ChatMessage{
+			ID:        uuid.NewString(), // Add ID to the model if it's not there
+			SessionID: s.ID,
+			Role:      "user",
+			Content:   userMessage,
+			Timestamp: time.Now(),
+		}
+		if err := c.sessions.SaveMessage(ctx, tx, &userMsg); err != nil {
+			return err
+		}
+
+		// 2. Create the AI job
+		job := &model.AIJob{
+			Status:        model.AIJobStatusPending,
+			SessionID:     s.ID,
+			UserMessageID: userMsg.ID,
+			CreatedAt:     time.Now(),
+		}
+		if err := c.jobs.Save(ctx, tx, job); err != nil {
+			return err
+		}
+
+		c.log.Info().Str("job_id", job.ID).Str("session_id", s.ID).Msg("AI job queued")
+		return nil // Success!
+	})
 }
 
 func (c *chatUC) EndChat(ctx context.Context, sessionID string) error {
@@ -338,15 +220,18 @@ func (c *chatUC) ListHistory(ctx context.Context, userID string, offset, limit i
 func (c *chatUC) SwitchActiveSession(ctx context.Context, userID, sessionID string) error {
 	defer logging.TraceDuration(c.log, "ChatUC.SwitchActiveSession")()
 
-	// Finish current active if different
-	if cur, err := c.sessions.FindActiveByUser(ctx, repository.NoTX, userID); err == nil && cur != nil && cur.ID != sessionID {
-		if err := c.sessions.UpdateStatus(ctx, repository.NoTX, cur.ID, model.ChatSessionFinished); err != nil {
-			c.log.Error().Err(err).Str("user_id", userID).Msg("Failed to close chat session")
-			return err
+	// Wrap the entire logic in a transaction
+	return c.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		// Finish current active session if it's different from the target session
+		if cur, err := c.sessions.FindActiveByUser(ctx, tx, userID); err == nil && cur != nil && cur.ID != sessionID {
+			if err := c.sessions.UpdateStatus(ctx, tx, cur.ID, model.ChatSessionFinished); err != nil {
+				c.log.Error().Err(err).Str("user_id", userID).Msg("Failed to close chat session")
+				return err // Rollback
+			}
 		}
-	}
-	// Activate the requested one
-	return c.sessions.UpdateStatus(ctx, repository.NoTX, sessionID, model.ChatSessionActive)
+		// Activate the requested one
+		return c.sessions.UpdateStatus(ctx, tx, sessionID, model.ChatSessionActive)
+	})
 }
 
 func (c *chatUC) DeleteSession(ctx context.Context, sessionID string) error {

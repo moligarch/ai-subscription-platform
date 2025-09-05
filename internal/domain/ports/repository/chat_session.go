@@ -15,7 +15,8 @@ type ChatSessionRepository interface {
 	Delete(ctx context.Context, tx Tx, id string) error
 	FindActiveByUser(ctx context.Context, tx Tx, userID string) (*model.ChatSession, error)
 	ListByUser(ctx context.Context, tx Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
-	FindByID(ctx context.Context, tx Tx, id string) (*model.ChatSession, error)
+	FindByID(ctx context.Context, tx Tx, sessionID string) (*model.ChatSession, error)
 	UpdateStatus(ctx context.Context, tx Tx, sessionID string, status model.ChatSessionStatus) error
+	FindUserBySessionID(ctx context.Context, tx Tx, sessionID string) (*model.User, error)
 	CleanupOldMessages(ctx context.Context, userID string, retentionDays int) (int64, error)
 }

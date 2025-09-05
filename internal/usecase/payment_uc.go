@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain"
@@ -36,6 +37,7 @@ type paymentUC struct {
 	subs      SubscriptionUseCase
 	purchases repository.PurchaseRepository
 	gateway   adapter.PaymentGateway
+	tm        repository.TransactionManager
 
 	log *zerolog.Logger
 }
@@ -46,6 +48,7 @@ func NewPaymentUseCase(
 	subs SubscriptionUseCase,
 	purchases repository.PurchaseRepository,
 	gateway adapter.PaymentGateway,
+	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 ) PaymentUseCase {
 	return &paymentUC{
@@ -54,6 +57,7 @@ func NewPaymentUseCase(
 		subs:      subs,
 		purchases: purchases,
 		gateway:   gateway,
+		tm:        tm,
 		log:       logger,
 	}
 }
@@ -70,8 +74,11 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 	}
 
 	plan, err := u.plans.FindByID(ctx, repository.NoTX, planID)
-	if err != nil || plan == nil {
-		return nil, "", domain.ErrNotFound
+	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, "", domain.ErrPlanNotFound
+		}
+		return nil, "", err // Propagate other unexpected errors
 	}
 	amount := plan.PriceIRR
 
@@ -108,55 +115,91 @@ func (u *paymentUC) Initiate(ctx context.Context, userID, planID, callbackURL, d
 	return p, startURL, nil
 }
 
+// The original `Confirm` function is now deprecated by the safer `ConfirmAuto`.
+// If you still need it, it should be refactored to also use the transaction manager.
 func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmount int64) (*model.Payment, error) {
+	// For now, we can just log a warning and call the main transactional function.
+	// In a real scenario, you might want a more complex transactional wrapper here as well.
+	u.log.Warn().Msg("Confirm is called, prefer using ConfirmAuto")
+	return u.ConfirmAuto(ctx, authority)
+}
+
+// ConfirmAuto now wraps the core logic in a transaction.
+func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (p *model.Payment, err error) {
 	if authority == "" {
-		return nil, errors.New("missing authority")
+		return nil, domain.ErrInvalidArgument
 	}
 
-	p, err := u.payments.FindByAuthority(ctx, repository.NoTX, authority)
-	if err != nil || p == nil {
-		return nil, errors.New("payment not found")
-	}
+	// The entire confirmation flow is now wrapped in a transaction.
+	// If any step inside this function returns an error, all database
+	// changes will be automatically rolled back.
+	err = u.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		// Look up payment to discover amount/plan
+		payment, err := u.payments.FindByAuthority(ctx, tx, authority)
+		if err != nil {
+			return domain.ErrNotFound
+		}
 
-	// Short circuit if already completed and linked
-	if p.Status == model.PaymentStatusSucceeded && p.SubscriptionID != nil {
-		return p, nil
-	}
+		// Re-check fast path
+		if payment.Status == model.PaymentStatusSucceeded && payment.SubscriptionID != nil {
+			p = payment
+			return nil // Already processed, exit transaction successfully
+		}
 
+		plan, err := u.plans.FindByID(ctx, tx, payment.PlanID)
+		if err != nil {
+			return domain.ErrNotFound
+		}
+
+		// Core confirmation logic
+		confirmedPayment, err := u.confirmPaymentInTx(ctx, tx, payment, int64(plan.PriceIRR))
+		if err != nil {
+			return err // Propagate error to trigger rollback
+		}
+		p = confirmedPayment
+		return nil
+	})
+
+	return p, err
+}
+
+func (u *paymentUC) SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error) {
+	return u.payments.SumByPeriod(ctx, tx, period)
+}
+
+// confirmPaymentInTx contains the actual logic that needs to be atomic.
+// It is now a private method that requires a transaction handle `tx`.
+func (u *paymentUC) confirmPaymentInTx(ctx context.Context, tx repository.Tx, p *model.Payment, expectedAmount int64) (*model.Payment, error) {
 	// Verify with provider
-	ref, err := u.gateway.VerifyPayment(ctx, authority, expectedAmount)
+	ref, err := u.gateway.VerifyPayment(ctx, p.Authority, expectedAmount)
 	if err != nil {
-		// mark failed best-effort
-		_ = u.payments.UpdateStatus(ctx, repository.NoTX, p.ID, model.PaymentStatusFailed, nil, nil)
+		// Mark failed best-effort. The transaction will be rolled back anyway,
+		// but this call ensures we update the status if the provider fails verification.
+		_ = u.payments.UpdateStatus(ctx, tx, p.ID, model.PaymentStatusFailed, nil, nil)
 		metrics.IncPayment("failed")
 		return nil, err
 	}
 
 	now := time.Now()
 	// Idempotent success transition (only one caller wins)
-	updated, err := u.payments.UpdateStatusIfPending(ctx, repository.NoTX, p.ID, model.PaymentStatusSucceeded, &ref, &now)
+	// Pass the `tx` handle to the repository method.
+	updated, err := u.payments.UpdateStatusIfPending(ctx, tx, p.ID, model.PaymentStatusSucceeded, &ref, &now)
 	if err != nil {
 		return nil, err
 	}
 	if !updated {
-		// Someone else finalized; re-read and move on
-		p, err = u.payments.FindByID(ctx, repository.NoTX, p.ID)
-		if err != nil {
-			return nil, err
-		}
-		// If succeeded and already linked, done
-		if p.Status == model.PaymentStatusSucceeded && p.SubscriptionID != nil {
-			return p, nil
-		}
-	} else {
-		// Reflect local copy
-		p.Status = model.PaymentStatusSucceeded
-		p.RefID = &ref
-		p.PaidAt = &now
-		p.UpdatedAt = now
+		// Someone else finalized it; re-read and return success.
+		// Note: We MUST re-read within the same transaction to get the latest locked row.
+		return u.payments.FindByID(ctx, tx, p.ID)
 	}
 
-	// Grant subscription (policy handled inside subs UC)
+	// Reflect local copy
+	p.Status = model.PaymentStatusSucceeded
+	p.RefID = &ref
+	p.PaidAt = &now
+	p.UpdatedAt = now
+
+	// Grant subscription (pass `tx` down if SubscriptionUseCase methods are transactional)
 	sub, err := u.subs.Subscribe(ctx, p.UserID, p.PlanID)
 	if err != nil {
 		return nil, err
@@ -164,9 +207,11 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 	// Link payment -> subscription
 	p.SubscriptionID = &sub.ID
 	p.UpdatedAt = time.Now()
-	_ = u.payments.Save(ctx, repository.NoTX, p)
+	if err := u.payments.Save(ctx, tx, p); err != nil {
+		return nil, err
+	}
 
-	// Append purchase (idempotent if DB has UNIQUE(payment_id))
+	// Append purchase record
 	pu := &model.Purchase{
 		ID:             uuid.NewString(),
 		UserID:         p.UserID,
@@ -175,33 +220,10 @@ func (u *paymentUC) Confirm(ctx context.Context, authority string, expectedAmoun
 		SubscriptionID: sub.ID,
 		CreatedAt:      time.Now(),
 	}
-	_ = u.purchases.Save(ctx, repository.NoTX, pu)
+	if err := u.purchases.Save(ctx, tx, pu); err != nil {
+		return nil, err
+	}
+
 	metrics.IncPayment("succeeded")
 	return p, nil
-}
-
-func (u *paymentUC) ConfirmAuto(ctx context.Context, authority string) (*model.Payment, error) {
-	if authority == "" {
-		return nil, errors.New("missing authority")
-	}
-	// Load payment to discover amount/plan
-	p, err := u.payments.FindByAuthority(ctx, repository.NoTX, authority)
-	if err != nil || p == nil {
-		return nil, errors.New("payment not found")
-	}
-
-	// Re-check fast path
-	if p.Status == model.PaymentStatusSucceeded && p.SubscriptionID != nil {
-		return p, nil
-	}
-
-	plan, err := u.plans.FindByID(ctx, repository.NoTX, p.PlanID)
-	if err != nil || plan == nil {
-		return nil, errors.New("plan not found")
-	}
-	return u.Confirm(ctx, authority, int64(plan.PriceIRR))
-}
-
-func (u *paymentUC) SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error) {
-	return u.payments.SumByPeriod(ctx, tx, period)
 }

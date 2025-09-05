@@ -277,6 +277,26 @@ func (r *chatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id str
 	return &s, nil
 }
 
+func (r *chatSessionRepo) FindUserBySessionID(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error) {
+	const q = `
+SELECT u.id, u.telegram_id, u.username, u.registered_at, u.last_active_at, u.allow_message_storage, u.auto_delete_messages, u.message_retention_days, u.data_encrypted, u.is_admin
+FROM users u
+JOIN chat_sessions s ON s.user_id = u.id
+WHERE s.id = $1;`
+	row, err := pickRow(ctx, r.pool, tx, q, sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var u model.User
+	var p model.PrivacySettings
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &p.AllowMessageStorage, &p.AutoDeleteMessages, &p.MessageRetentionDays, &p.DataEncrypted, &u.IsAdmin); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	u.Privacy = p
+	return &u, nil
+}
+
 func (r *chatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
 	const q = `UPDATE chat_sessions SET status=$2, updated_at=NOW() WHERE id=$1;`
 
