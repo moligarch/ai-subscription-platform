@@ -1,6 +1,5 @@
 networks:
   lan_net:
-    external: true    # we created it with `docker network create`
 
 services:
   postgres:
@@ -18,8 +17,8 @@ services:
     command: ["postgres","-c","listen_addresses=*"]
     restart: unless-stopped
     networks:
-      lan_net:
-        ipv4_address: 192.168.10.211
+      - lan_net
+        # ipv4_address: 192.168.10.211
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U app -d appdb -h 127.0.0.1 -p 5432"]
       interval: 20s
@@ -32,8 +31,8 @@ services:
     command: ["redis-server","--appendonly","no","--bind","0.0.0.0"]
     restart: unless-stopped
     networks:
-      lan_net:
-        ipv4_address: 192.168.10.212
+      - lan_net
+        # ipv4_address: 192.168.10.212
 
   prometheus:
     image: prom/prometheus:v2.53.1
@@ -46,8 +45,8 @@ services:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
     networks:
-      lan_net:
-        ipv4_address: 192.168.10.213
+      - lan_net
+        # ipv4_address: 192.168.10.213
 
   app:
     build:
@@ -61,9 +60,9 @@ services:
       - .env
     environment:
       TZ: Asia/Tehran
-      HTTPS_PROXY: http://192.168.10.1:10809
-      HTTP_PROXY:  http://192.168.10.1:10809
-      NO_PROXY:    127.0.0.1,localhost,192.168.10.0/24
+      # HTTPS_PROXY: http://192.168.10.1:10809
+      # HTTP_PROXY:  http://192.168.10.1:10809
+      # NO_PROXY:    127.0.0.1,localhost,192.168.10.0/24
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,8 +75,8 @@ services:
           cpus: "2.0"
           memory: 2g
     networks:
-      lan_net:
-        ipv4_address: 192.168.10.210
+      - lan_net
+        # ipv4_address: 192.168.10.210
 
 volumes:
   pgdata:
