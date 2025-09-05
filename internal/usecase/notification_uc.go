@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+
+	"github.com/rs/zerolog"
 )
 
 // Compile-time check
@@ -15,14 +17,15 @@ type NotificationUseCase interface {
 
 type notificationUC struct {
 	subs repository.SubscriptionRepository
+	log  *zerolog.Logger
 }
 
-func NewNotificationUseCase(subs repository.SubscriptionRepository) *notificationUC {
-	return &notificationUC{subs: subs}
+func NewNotificationUseCase(subs repository.SubscriptionRepository, logger *zerolog.Logger) *notificationUC {
+	return &notificationUC{subs: subs, log: logger}
 }
 
 func (n *notificationUC) CheckAndCountExpiring(ctx context.Context, withinDays int) (int, error) {
-	items, err := n.subs.FindExpiring(ctx, nil, withinDays)
+	items, err := n.subs.FindExpiring(ctx, repository.NoTX, withinDays)
 	if err != nil {
 		return 0, err
 	}

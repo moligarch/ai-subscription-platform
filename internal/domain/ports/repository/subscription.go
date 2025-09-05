@@ -10,14 +10,14 @@ import (
 // -----------------------------
 
 type SubscriptionRepository interface {
-	Save(ctx context.Context, qx any, s *model.UserSubscription) error
-	FindActiveByUserAndPlan(ctx context.Context, qx any, userID, planID string) (*model.UserSubscription, error)
-	FindActiveByUser(ctx context.Context, qx any, userID string) (*model.UserSubscription, error)
-	FindReservedByUser(ctx context.Context, qx any, userID string) ([]*model.UserSubscription, error)
-	FindByID(ctx context.Context, qx any, id string) (*model.UserSubscription, error)
-	FindExpiring(ctx context.Context, qx any, withinDays int) ([]*model.UserSubscription, error)
-	CountActiveByPlan(ctx context.Context, qx any) (map[string]int, error)
-	TotalRemainingCredits(ctx context.Context, qx any) (int64, error)
+	Save(ctx context.Context, tx Tx, s *model.UserSubscription) error
+	FindActiveByUserAndPlan(ctx context.Context, tx Tx, userID, planID string) (*model.UserSubscription, error)
+	FindActiveByUser(ctx context.Context, tx Tx, userID string) (*model.UserSubscription, error)
+	FindReservedByUser(ctx context.Context, tx Tx, userID string) ([]*model.UserSubscription, error)
+	FindByID(ctx context.Context, tx Tx, id string) (*model.UserSubscription, error)
+	FindExpiring(ctx context.Context, tx Tx, withinDays int) ([]*model.UserSubscription, error)
+	CountActiveByPlan(ctx context.Context, tx Tx) (map[string]int, error)
+	TotalRemainingCredits(ctx context.Context, tx Tx) (int64, error)
 }
 
 // -----------------------------
@@ -25,6 +25,6 @@ type SubscriptionRepository interface {
 // -----------------------------
 
 type NotificationLogRepository interface {
-	SaveExpiry(ctx context.Context, qx any, subscriptionID, userID string, thresholdDays int) error
-	ExistsExpiry(ctx context.Context, qx any, subscriptionID string, thresholdDays int) (bool, error)
+	SaveExpiry(ctx context.Context, tx Tx, subscriptionID, userID string, thresholdDays int) error
+	ExistsExpiry(ctx context.Context, tx Tx, subscriptionID string, thresholdDays int) (bool, error)
 }

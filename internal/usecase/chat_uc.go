@@ -3,7 +3,6 @@ package usecase
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
-	derror "telegram-ai-subscription/internal/error"
 	"telegram-ai-subscription/internal/infra/logging"
 	"telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
@@ -32,7 +30,7 @@ type HistoryItem struct {
 
 type ChatUseCase interface {
 	StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error)
-	SendMessage(ctx context.Context, sessionID, userMessage string) (reply string, err error)
+	SendChatMessage(ctx context.Context, sessionID, userMessage string) (reply string, err error)
 	EndChat(ctx context.Context, sessionID string) error
 	FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error)
 	ListModels(ctx context.Context) ([]string, error)
@@ -49,8 +47,8 @@ type chatUC struct {
 	devMode  bool
 	prices   repository.ModelPricingRepository
 
-	locker red.Locker
-	log    *zerolog.Logger
+	lock red.Locker
+	log  *zerolog.Logger
 }
 
 func NewChatUseCase(
@@ -62,7 +60,7 @@ func NewChatUseCase(
 	devMode bool,
 	prices repository.ModelPricingRepository,
 ) *chatUC {
-	return &chatUC{sessions: sessions, ai: ai, subs: subs, locker: locker, log: logger, devMode: devMode, prices: prices}
+	return &chatUC{sessions: sessions, ai: ai, subs: subs, lock: locker, log: logger, devMode: devMode, prices: prices}
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
@@ -71,33 +69,42 @@ func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*mode
 	lockKey := "chat:start:" + userID
 
 	// brief, bounded backoff loop (e.g., total ~250ms) to reduce false negatives under load
-	token, err := c.locker.TryLock(ctx, lockKey, 3*time.Second)
+	token, err := c.lock.TryLock(ctx, lockKey, 3*time.Second)
 	if err != nil {
-		return nil, err
+		c.log.Error().Msg("ChatUC.StartChat: Failed to initiate a chat")
+		return nil, domain.ErrInitiateChat
 	}
-	defer func() { _ = c.locker.Unlock(ctx, lockKey, token) }()
+	defer func() { _ = c.lock.Unlock(ctx, lockKey, token) }()
 
 	// Double-check existing active session.
-	if s, err := c.sessions.FindActiveByUser(ctx, nil, userID); err == nil && s != nil {
-		return nil, derror.ErrActiveChatExists
+	if s, err := c.sessions.FindActiveByUser(ctx, repository.NoTX, userID); err == nil && s != nil {
+		return nil, domain.ErrActiveChatExists
 	}
 
 	s := model.NewChatSession(uuid.NewString(), userID, modelName)
-	if err := c.sessions.Save(ctx, nil, s); err != nil {
-		return nil, err
+	if err := c.sessions.Save(ctx, repository.NoTX, s); err != nil {
+		c.log.Error().Msg("ChatUC.StartChat: Failed to initiate a session")
+		return nil, domain.ErrInitiateChat
 	}
 	return s, nil
 }
 
-func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string) (string, error) {
-	defer logging.TraceDuration(c.log, "ChatUC.SendMessage")()
+func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage string) (string, error) {
+	defer logging.TraceDuration(c.log, "ChatUC.SendChatMessage")()
 
-	s, err := c.sessions.FindByID(ctx, nil, sessionID)
+	s, err := c.sessions.FindByID(ctx, repository.NoTX, sessionID)
 	if err != nil {
-		return "", err
+		return "", domain.ErrNotFound
 	}
+	var pricing *model.ModelPricing
+	pr, err := c.prices.GetByModelName(ctx, repository.NoTX, s.Model)
+	if err != nil {
+		return "⚠️ در حال حاضر امکان استفاده از این مدل وجود ندارد.", domain.ErrModelPricingMissing
+	}
+	pricing = pr
+
 	if s.Status != model.ChatSessionActive {
-		return "", derror.ErrNoActiveChat
+		return "", domain.ErrNoActiveChat
 	}
 	userMessage = strings.TrimSpace(userMessage)
 	if userMessage == "" {
@@ -118,7 +125,6 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 
 	// ---------- Phase A: pre-send affordability check + pre-token count ----------
 	var (
-		pricing       *model.ModelPricing
 		balanceMicros int64
 		promptTokens  int // saved on the user message
 	)
@@ -129,18 +135,12 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 			if errors.Is(err, domain.ErrNotFound) {
 				return "", domain.ErrNoActiveSubscription
 			}
-			return "", err
+			return "", domain.ErrOperationFailed
 		}
-		if active == nil {
-			return "❌ You don't have an active subscription. Use /plans to get started.", nil
-		}
+		// if active == nil {
+		// 	return "❌ شما هیچ اشتراک فعالی ندارید. برای خرید اشتراک می‌تونید از /plan استفاده کنید.", nil
+		// }
 		balanceMicros = active.RemainingCredits
-
-		pr, err := c.prices.GetByModelName(ctx, s.Model)
-		if err != nil {
-			return "⚠️ Pricing for this model is not configured yet. Please try later or choose another model.", nil
-		}
-		pricing = pr
 
 		// Build history INCLUDING this new user message (but don't persist yet).
 		msgsHist := s.GetRecentMessages(15)
@@ -195,16 +195,13 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 		if action == "block" {
 			metrics.PrecheckBlocked(providerGuess, s.Model)
 
-			return fmt.Sprintf(
-				"⚠️ Insufficient balance.\nCurrent: %d µcr\nRequired for this message: %d µcr\n\nTip: try a shorter message or /plans to top up.",
-				balanceMicros, requiredMicros,
-			), nil
+			return "", domain.ErrInsufficientBalance
 		}
 	}
 
 	// ---------- Persist user message (store pre-count tokens) ----------
 	s.AddMessage("user", userMessage, promptTokens)
-	if err := c.sessions.SaveMessage(ctx, nil, &s.Messages[len(s.Messages)-1]); err != nil {
+	if err := c.sessions.SaveMessage(ctx, repository.NoTX, &s.Messages[len(s.Messages)-1]); err != nil {
 		return "", err
 	}
 
@@ -225,11 +222,11 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 
 	// ---------- Persist assistant message with completion tokens ----------
 	s.AddMessage("assistant", reply, usage.CompletionTokens)
-	if err := c.sessions.SaveMessage(ctx, nil, &s.Messages[len(s.Messages)-1]); err != nil {
+	if err := c.sessions.SaveMessage(ctx, repository.NoTX, &s.Messages[len(s.Messages)-1]); err != nil {
 		return "", err
 	}
 	s.UpdatedAt = time.Now()
-	_ = c.sessions.Save(ctx, nil, s)
+	_ = c.sessions.Save(ctx, repository.NoTX, s)
 
 	// ---------- Post-call: exact deduction based on usage + structured log ----------
 	var spent int64
@@ -237,8 +234,8 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 		spent = int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
 			int64(usage.CompletionTokens)*pricing.OutputTokenPriceMicros
 		if spent > 0 {
-			if _, derr := c.subs.DeductCredits(ctx, s.UserID, spent); derr != nil {
-				return "", derr
+			if _, err = c.subs.DeductCredits(ctx, s.UserID, spent); err != nil {
+				return "", err
 			}
 		}
 	}
@@ -269,22 +266,36 @@ func (c *chatUC) SendMessage(ctx context.Context, sessionID, userMessage string)
 
 func (c *chatUC) EndChat(ctx context.Context, sessionID string) error {
 	defer logging.TraceDuration(c.log, "ChatUC.EndChat")()
-	s, err := c.sessions.FindByID(ctx, nil, sessionID)
-	if err != nil {
-		return err
+	s, err := c.sessions.FindByID(ctx, repository.NoTX, sessionID)
+	switch err {
+	case nil:
+		break
+	case domain.ErrNotFound:
+		return domain.ErrNotFound
+	default:
+		return domain.ErrOperationFailed
 	}
-	return c.sessions.UpdateStatus(ctx, nil, s.ID, model.ChatSessionFinished)
+
+	err = c.sessions.UpdateStatus(ctx, repository.NoTX, s.ID, model.ChatSessionFinished)
+	switch err {
+	case nil:
+		return nil
+	default:
+		return domain.ErrOperationFailed
+	}
 }
 
 func (c *chatUC) FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error) {
-	return c.sessions.FindActiveByUser(ctx, nil, userID)
+	defer logging.TraceDuration(c.log, "ChatUC.FindActiveSession")()
+	return c.sessions.FindActiveByUser(ctx, repository.NoTX, userID)
 }
 
 func (c *chatUC) ListModels(ctx context.Context) ([]string, error) {
 	defer logging.TraceDuration(c.log, "ChatUC.ListModels")()
 
-	rows, err := c.prices.ListActive(ctx)
+	rows, err := c.prices.ListActive(ctx, repository.NoTX)
 	if err != nil {
+		c.log.Error().Err(err).Msg("Failed to get active model price.")
 		return nil, err
 	}
 	out := make([]string, 0, len(rows))
@@ -300,8 +311,9 @@ func (c *chatUC) ListModels(ctx context.Context) ([]string, error) {
 func (c *chatUC) ListHistory(ctx context.Context, userID string, offset, limit int) ([]HistoryItem, error) {
 	defer logging.TraceDuration(c.log, "ChatUC.ListHistory")()
 
-	sessions, err := c.sessions.ListByUser(ctx, nil, userID, offset, limit)
+	sessions, err := c.sessions.ListByUser(ctx, repository.NoTX, userID, offset, limit)
 	if err != nil {
+		c.log.Error().Err(err).Str("user_id", userID).Msg("Failed to retrieve user sessions.")
 		return nil, err
 	}
 	items := make([]HistoryItem, 0, len(sessions))
@@ -327,16 +339,17 @@ func (c *chatUC) SwitchActiveSession(ctx context.Context, userID, sessionID stri
 	defer logging.TraceDuration(c.log, "ChatUC.SwitchActiveSession")()
 
 	// Finish current active if different
-	if cur, err := c.sessions.FindActiveByUser(ctx, nil, userID); err == nil && cur != nil && cur.ID != sessionID {
-		if err := c.sessions.UpdateStatus(ctx, nil, cur.ID, model.ChatSessionFinished); err != nil {
+	if cur, err := c.sessions.FindActiveByUser(ctx, repository.NoTX, userID); err == nil && cur != nil && cur.ID != sessionID {
+		if err := c.sessions.UpdateStatus(ctx, repository.NoTX, cur.ID, model.ChatSessionFinished); err != nil {
+			c.log.Error().Err(err).Str("user_id", userID).Msg("Failed to close chat session")
 			return err
 		}
 	}
 	// Activate the requested one
-	return c.sessions.UpdateStatus(ctx, nil, sessionID, model.ChatSessionActive)
+	return c.sessions.UpdateStatus(ctx, repository.NoTX, sessionID, model.ChatSessionActive)
 }
 
 func (c *chatUC) DeleteSession(ctx context.Context, sessionID string) error {
 	defer logging.TraceDuration(c.log, "ChatUC.DeleteSession")()
-	return c.sessions.Delete(ctx, nil, sessionID)
+	return c.sessions.Delete(ctx, repository.NoTX, sessionID)
 }

@@ -12,12 +12,11 @@ import (
 // ExpiryWorker periodically finishes expired subscriptions via the use case.
 type ExpiryWorker struct {
 	interval time.Duration
-	uc       usecase.SubscriptionUseCase
+	subUC    usecase.SubscriptionUseCase
 }
 
-func NewExpiryWorker(interval time.Duration, subs repository.SubscriptionRepository, plans repository.SubscriptionPlanRepository) *ExpiryWorker {
-	uc := usecase.NewSubscriptionUseCase(subs, plans)
-	return &ExpiryWorker{interval: interval, uc: uc}
+func NewExpiryWorker(interval time.Duration, subs repository.SubscriptionRepository, plans repository.SubscriptionPlanRepository, subUC usecase.SubscriptionUseCase) *ExpiryWorker {
+	return &ExpiryWorker{interval: interval, subUC: subUC}
 }
 
 func (w *ExpiryWorker) Run(ctx context.Context) error {
@@ -28,7 +27,7 @@ func (w *ExpiryWorker) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-t.C:
-			n, err := w.uc.FinishExpired(ctx)
+			n, err := w.subUC.FinishExpired(ctx)
 			if err != nil {
 				log.Printf("expiry worker error: %v", err)
 			}

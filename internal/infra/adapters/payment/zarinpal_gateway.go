@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 )
 
@@ -31,10 +32,10 @@ type ZarinPalGateway struct {
 // we will fall back to this absolute value.
 func NewZarinPalGateway(merchantID, callbackURL string, sandbox bool) (*ZarinPalGateway, error) {
 	if merchantID == "" {
-		return nil, errors.New("merchant id empty")
+		return nil, domain.ErrInvalidArgument
 	}
 	if u, err := url.Parse(callbackURL); err != nil || !u.IsAbs() {
-		return nil, fmt.Errorf("invalid callback url (must be absolute): %q", callbackURL)
+		return nil, domain.ErrInvalidArgument
 	}
 	gp := &ZarinPalGateway{
 		merchantID: merchantID,
@@ -99,7 +100,7 @@ func (z *ZarinPalGateway) RequestPayment(ctx context.Context, amountIRR int64, d
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := z.client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", domain.ErrRequestFailed
 	}
 	defer resp.Body.Close()
 	var out struct {
@@ -110,10 +111,10 @@ func (z *ZarinPalGateway) RequestPayment(ctx context.Context, amountIRR int64, d
 		Errors any `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", "", err
+		return "", "", domain.ErrOperationFailed
 	}
 	if out.Data.Code != 100 || out.Data.Authority == "" {
-		return "", "", errors.New("zarinpal request failed")
+		return "", "", domain.ErrRequestFailed
 	}
 	return out.Data.Authority, z.startPayURL(out.Data.Authority), nil
 }
@@ -130,7 +131,7 @@ func (z *ZarinPalGateway) VerifyPayment(ctx context.Context, authority string, e
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := z.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", domain.ErrRequestFailed
 	}
 	defer resp.Body.Close()
 	var out struct {
@@ -141,11 +142,11 @@ func (z *ZarinPalGateway) VerifyPayment(ctx context.Context, authority string, e
 		Errors any `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", err
+		return "", domain.ErrOperationFailed
 	}
 	// success code is 100 (101 means already verified). Treat both as ok if ref_id present.
 	if (out.Data.Code != 100 && out.Data.Code != 101) || out.Data.RefID == 0 {
-		return "", errors.New("zarinpal verify failed")
+		return "", domain.ErrRequestFailed
 	}
 	return fmt.Sprintf("%d", out.Data.RefID), nil
 }
@@ -186,11 +187,11 @@ func (z *ZarinPalGateway) RefundPayment(ctx context.Context, sessionID string, a
 
 	resp, err := z.client.Do(httpReq)
 	if err != nil {
-		return adapter.RefundResult{}, err
+		return adapter.RefundResult{}, domain.ErrRequestFailed
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return adapter.RefundResult{}, fmt.Errorf("refund http %d", resp.StatusCode)
+		return adapter.RefundResult{}, domain.ErrRequestFailed
 	}
 	var out struct {
 		Data struct {
@@ -207,10 +208,10 @@ func (z *ZarinPalGateway) RefundPayment(ctx context.Context, sessionID string, a
 		Errors any `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return adapter.RefundResult{}, err
+		return adapter.RefundResult{}, domain.ErrOperationFailed
 	}
 	if out.Errors != nil {
-		return adapter.RefundResult{}, fmt.Errorf("refund gql error: %v", out.Errors)
+		return adapter.RefundResult{}, domain.ErrRequestFailed
 	}
 	var rt time.Time
 	if t := out.Data.Resource.Timeline.RefundTime; t != "" {

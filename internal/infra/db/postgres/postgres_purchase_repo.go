@@ -7,54 +7,51 @@ import (
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 )
 
-var _ repository.PurchaseRepository = (*PostgresPurchaseRepo)(nil)
+var _ repository.PurchaseRepository = (*purchaseRepo)(nil)
 
-type PostgresPurchaseRepo struct {
+type purchaseRepo struct {
 	pool *pgxpool.Pool
 }
 
-func NewPostgresPurchaseRepo(pool *pgxpool.Pool) *PostgresPurchaseRepo {
-	return &PostgresPurchaseRepo{pool: pool}
+func NewPurchaseRepo(pool *pgxpool.Pool) *purchaseRepo {
+	return &purchaseRepo{pool: pool}
 }
 
-func (r *PostgresPurchaseRepo) Save(ctx context.Context, qx any, pu *model.Purchase) error {
+func (r *purchaseRepo) Save(ctx context.Context, tx repository.Tx, pu *model.Purchase) error {
 	const q = `
 INSERT INTO purchases (id, user_id, plan_id, payment_id, subscription_id, created_at)
 VALUES ($1,$2,$3,$4,$5,$6)
 ON CONFLICT (id) DO NOTHING;`
-	switch v := qx.(type) {
-	case pgx.Tx:
-		_, err := v.Exec(ctx, q, pu.ID, pu.UserID, pu.PlanID, pu.PaymentID, pu.SubscriptionID, pu.CreatedAt)
-		return err
-	case *pgxpool.Conn:
-		_, err := v.Exec(ctx, q, pu.ID, pu.UserID, pu.PlanID, pu.PaymentID, pu.SubscriptionID, pu.CreatedAt)
-		return err
-	default:
-		_, err := r.pool.Exec(ctx, q, pu.ID, pu.UserID, pu.PlanID, pu.PaymentID, pu.SubscriptionID, pu.CreatedAt)
-		return err
+
+	_, err := execSQL(ctx, r.pool, tx, q, pu.ID, pu.UserID, pu.PlanID, pu.PaymentID, pu.SubscriptionID, pu.CreatedAt)
+	if err != nil {
+		if err == domain.ErrInvalidArgument || err == domain.ErrInvalidExecContext {
+			return err
+		}
+		return domain.ErrOperationFailed
 	}
+	return nil
 }
 
-func (r *PostgresPurchaseRepo) ListByUser(ctx context.Context, qx any, userID string) ([]*model.Purchase, error) {
+func (r *purchaseRepo) ListByUser(ctx context.Context, tx repository.Tx, userID string) ([]*model.Purchase, error) {
 	const q = `
 SELECT id, user_id, plan_id, payment_id, subscription_id, created_at
   FROM purchases WHERE user_id=$1 ORDER BY created_at DESC;`
-	var rows pgx.Rows
-	var err error
-	switch v := qx.(type) {
-	case pgx.Tx:
-		rows, err = v.Query(ctx, q, userID)
-	case *pgxpool.Conn:
-		rows, err = v.Query(ctx, q, userID)
-	default:
-		rows, err = r.pool.Query(ctx, q, userID)
-	}
+	rows, err := queryRows(ctx, r.pool, nil, q, userID)
 	if err != nil {
-		return nil, err
+		switch err {
+		case pgx.ErrNoRows:
+			return nil, domain.ErrNotFound
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+			return nil, err
+		default:
+			return nil, domain.ErrOperationFailed
+		}
 	}
 	defer rows.Close()
 

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain/ports/repository"
+
+	"github.com/rs/zerolog"
 )
 
 // Compile-time check
@@ -20,22 +22,24 @@ type statsUC struct {
 	users    repository.UserRepository
 	subs     repository.SubscriptionRepository
 	payments repository.PaymentRepository
+
+	log *zerolog.Logger
 }
 
-func NewStatsUseCase(users repository.UserRepository, subs repository.SubscriptionRepository, payments repository.PaymentRepository) *statsUC {
-	return &statsUC{users: users, subs: subs, payments: payments}
+func NewStatsUseCase(users repository.UserRepository, subs repository.SubscriptionRepository, payments repository.PaymentRepository, logger *zerolog.Logger) *statsUC {
+	return &statsUC{users: users, subs: subs, payments: payments, log: logger}
 }
 
 func (s *statsUC) Totals(ctx context.Context) (int, map[string]int, int64, error) {
-	users, err := s.users.CountUsers(ctx, nil)
+	users, err := s.users.CountUsers(ctx, repository.NoTX)
 	if err != nil {
 		return 0, nil, 0, err
 	}
-	active, err := s.subs.CountActiveByPlan(ctx, nil)
+	active, err := s.subs.CountActiveByPlan(ctx, repository.NoTX)
 	if err != nil {
 		return 0, nil, 0, err
 	}
-	rem, err := s.subs.TotalRemainingCredits(ctx, nil)
+	rem, err := s.subs.TotalRemainingCredits(ctx, repository.NoTX)
 	if err != nil {
 		return 0, nil, 0, err
 	}
@@ -43,15 +47,15 @@ func (s *statsUC) Totals(ctx context.Context) (int, map[string]int, int64, error
 }
 
 func (s *statsUC) Revenue(ctx context.Context) (int64, int64, int64, error) {
-	w, err := s.payments.SumByPeriod(ctx, nil, "week")
+	w, err := s.payments.SumByPeriod(ctx, repository.NoTX, "week")
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	m, err := s.payments.SumByPeriod(ctx, nil, "month")
+	m, err := s.payments.SumByPeriod(ctx, repository.NoTX, "month")
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	y, err := s.payments.SumByPeriod(ctx, nil, "year")
+	y, err := s.payments.SumByPeriod(ctx, repository.NoTX, "year")
 	if err != nil {
 		return 0, 0, 0, err
 	}
@@ -59,5 +63,5 @@ func (s *statsUC) Revenue(ctx context.Context) (int64, int64, int64, error) {
 }
 
 func (s *statsUC) InactiveUsers(ctx context.Context, olderThan time.Time) (int, error) {
-	return s.users.CountInactiveUsers(ctx, nil, olderThan)
+	return s.users.CountInactiveUsers(ctx, repository.NoTX, olderThan)
 }

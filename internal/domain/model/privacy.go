@@ -20,9 +20,9 @@ func NewPrivacySettings(userID string) *PrivacySettings {
 	return &PrivacySettings{
 		UserID:               userID,
 		AllowMessageStorage:  true,
-		AutoDeleteMessages:   false,
+		AutoDeleteMessages:   true,
 		MessageRetentionDays: 30,
-		DataEncrypted:        false,
+		DataEncrypted:        true,
 		CreatedAt:            now,
 		UpdatedAt:            now,
 	}

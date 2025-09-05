@@ -93,17 +93,17 @@ func main() {
 	}
 
 	// ---- Repositories ----
-	userRepo := pg.NewPostgresUserRepo(pool)
-	planRepo := pg.NewPostgresPlanRepo(pool)
-	subRepo := pg.NewPostgresSubscriptionRepo(pool)
-	payRepo := pg.NewPostgresPaymentRepo(pool)
-	purchaseRepo := pg.NewPostgresPurchaseRepo(pool)
-	chatRepo := pg.NewPostgresChatSessionRepo(pool, chatCache, enc)
+	userRepo := pg.NewUserRepo(pool)
+	planRepo := pg.NewPlanRepo(pool)
+	subRepo := pg.NewSubscriptionRepo(pool)
+	payRepo := pg.NewPaymentRepo(pool)
+	purchaseRepo := pg.NewPurchaseRepo(pool)
+	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo)
-	planUC := usecase.NewPlanUseCase(planRepo)
-	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo)
+	userUC := usecase.NewUserUseCase(userRepo, logger)
+	planUC := usecase.NewPlanUseCase(planRepo, logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, logger)
 
 	providers := map[string]adapter.AIServiceAdapter{}
 
@@ -141,7 +141,7 @@ func main() {
 	// composite used across the app
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
-	priceRepo := pg.NewPostgresModelPricingRepo(pool)
+	priceRepo := pg.NewModelPricingRepo(pool)
 	chatUC := usecase.NewChatUseCase(chatRepo, aiRouter, subUC, locker, logger, cfg.Runtime.Dev, priceRepo)
 
 	// Payment gateway + use case
@@ -149,10 +149,10 @@ func main() {
 	if err != nil {
 		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
-	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp)
+	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, logger)
 
-	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo)
-	notifUC := usecase.NewNotificationUseCase(subRepo)
+	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
+	notifUC := usecase.NewNotificationUseCase(subRepo, logger)
 	_ = notifUC // wired by schedulers/workers later
 
 	// Compute callback path from full URL in config (fallback to default)
@@ -167,7 +167,7 @@ func main() {
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cfg.Payment.ZarinPal.CallbackURL)
 
 	// ---- Telegram ----
-	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, cfg.Bot.Workers)
+	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, cfg.Bot.Workers, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("telegram adapter")
 	}
@@ -212,7 +212,7 @@ func main() {
 
 	// ---- Background workers ----
 	// Expiry worker: hourly sweep
-	expiryWorker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo)
+	expiryWorker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo, subUC)
 	go func() { _ = expiryWorker.Run(ctx) }()
 
 	// Payment reconciler: periodically reconcile stuck/pending payments

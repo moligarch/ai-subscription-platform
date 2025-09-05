@@ -6,6 +6,9 @@ import (
 
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/logging"
+
+	"github.com/rs/zerolog"
 )
 
 // Compile-time check
@@ -21,19 +24,30 @@ type UserUseCase interface {
 
 type userUC struct {
 	users repository.UserRepository
+
+	log *zerolog.Logger
 }
 
-func NewUserUseCase(users repository.UserRepository) *userUC { return &userUC{users: users} }
+func NewUserUseCase(users repository.UserRepository, logger *zerolog.Logger) *userUC {
+	return &userUC{
+		users: users,
+		log:   logger,
+	}
+}
 
 func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error) {
-	usr, err := u.users.FindByTelegramID(ctx, nil, tgID)
+	defer logging.TraceDuration(u.log, "UserUC.RegisterOrFetch")()
+	usr, err := u.users.FindByTelegramID(ctx, repository.NoTX, tgID)
 	if err == nil {
 		// update username/last_active if changed
 		if usr.Username != username && username != "" {
 			usr.Username = username
 		}
 		usr.Touch()
-		_ = u.users.Save(ctx, nil, usr)
+		err = u.users.Save(ctx, repository.NoTX, usr)
+		if err != nil {
+			u.log.Error().Err(err).Msg("Failed to update user")
+		}
 		return usr, nil
 	}
 	// not found -> create
@@ -41,20 +55,23 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 	if e != nil {
 		return nil, e
 	}
-	if err := u.users.Save(ctx, nil, nu); err != nil {
+	if err := u.users.Save(ctx, repository.NoTX, nu); err != nil {
 		return nil, err
 	}
 	return nu, nil
 }
 
 func (u *userUC) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
-	return u.users.FindByTelegramID(ctx, nil, tgID)
+	defer logging.TraceDuration(u.log, "UserUC.GetByTelegramID")()
+	return u.users.FindByTelegramID(ctx, repository.NoTX, tgID)
 }
 
 func (u *userUC) Count(ctx context.Context) (int, error) {
-	return u.users.CountUsers(ctx, nil)
+	defer logging.TraceDuration(u.log, "UserUC.Count")()
+	return u.users.CountUsers(ctx, repository.NoTX)
 }
 
 func (u *userUC) CountInactiveSince(ctx context.Context, since time.Time) (int, error) {
-	return u.users.CountInactiveUsers(ctx, nil, since)
+	defer logging.TraceDuration(u.log, "UserUC.CountInactiveSince")()
+	return u.users.CountInactiveUsers(ctx, repository.NoTX, since)
 }

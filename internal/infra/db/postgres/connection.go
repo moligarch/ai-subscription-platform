@@ -3,9 +3,12 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"time"
 
+	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -108,19 +111,37 @@ func scanSub(row pgx.Row) (*model.UserSubscription, error) {
 	s := &model.UserSubscription{}
 	var status string
 	if err := row.Scan(&s.ID, &s.UserID, &s.PlanID, &s.CreatedAt, &s.ScheduledStartAt, &s.StartAt, &s.ExpiresAt, &s.RemainingCredits, &status); err != nil {
-		return nil, err
+		return nil, domain.ErrReadDatabaseRow
 	}
 	s.Status = model.SubscriptionStatus(status)
 	return s, nil
 }
 
-func pickRow(pool *pgxpool.Pool, qx any, sql string, args ...any) pgx.Row {
-	switch v := qx.(type) {
-	case pgx.Tx:
-		return v.QueryRow(context.Background(), sql, args...)
-	case *pgxpool.Conn:
-		return v.QueryRow(context.Background(), sql, args...)
-	default:
-		return pool.QueryRow(context.Background(), sql, args...)
+func pickRow(ctx context.Context, pool *pgxpool.Pool, tx repository.Tx, sql string, args ...any) (pgx.Row, error) {
+	exec, err := getExecutor(pool, tx)
+	if err != nil {
+		return nil, err
 	}
+	row := exec.QueryRow(ctx, sql, args...)
+	if row == nil {
+		return nil, domain.ErrNotFound
+	}
+
+	return row, nil
+}
+
+func queryRows(ctx context.Context, pool *pgxpool.Pool, tx repository.Tx, sql string, args ...any) (pgx.Rows, error) {
+	exec, err := getExecutor(pool, tx)
+	if err != nil {
+		return nil, err
+	}
+	return exec.Query(ctx, sql, args...)
+}
+
+func execSQL(ctx context.Context, pool *pgxpool.Pool, tx repository.Tx, sql string, args ...any) (pgconn.CommandTag, error) {
+	exec, err := getExecutor(pool, tx)
+	if err != nil {
+		return nil, err
+	}
+	return exec.Exec(ctx, sql, args...)
 }

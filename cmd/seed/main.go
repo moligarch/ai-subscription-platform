@@ -8,6 +8,7 @@ import (
 
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/db/postgres"
 
 	"github.com/google/uuid"
@@ -30,8 +31,8 @@ func main() {
 	defer pool.Close()
 
 	// Repos
-	plans := postgres.NewPostgresPlanRepo(pool)
-	prices := postgres.NewPostgresModelPricingRepo(pool)
+	plans := postgres.NewPlanRepo(pool)
+	prices := postgres.NewModelPricingRepo(pool)
 
 	now := time.Now()
 
@@ -57,7 +58,7 @@ func main() {
 	}
 
 	for _, p := range seedPlans {
-		if err := plans.Save(ctx, &p); err != nil {
+		if err := plans.Save(ctx, repository.NoTX, &p); err != nil {
 			log.Printf("plan upsert %s: %v", p.ID, err)
 		} else {
 			log.Printf("plan upserted: %s", p.ID)
@@ -102,7 +103,7 @@ func main() {
 	}
 
 	for _, pr := range seedPrices {
-		if err := prices.Save(ctx, &pr); err != nil {
+		if err := prices.Save(ctx, repository.NoTX, &pr); err != nil {
 			log.Printf("pricing upsert %s: %v", pr.ModelName, err)
 		} else {
 			log.Printf("pricing upserted: %s", pr.ModelName)
