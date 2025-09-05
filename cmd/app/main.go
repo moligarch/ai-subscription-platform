@@ -24,6 +24,7 @@ import (
 	red "telegram-ai-subscription/internal/infra/redis"
 	"telegram-ai-subscription/internal/infra/sched"
 	"telegram-ai-subscription/internal/infra/security"
+	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 
 	"github.com/rs/zerolog"
@@ -81,6 +82,9 @@ func main() {
 	}
 	defer pg.ClosePgxPool(pool)
 
+	// ---- Transaction Manager ----
+	txManager := pg.NewTxManager(pool)
+
 	// ---- Encryption ----
 	encKey := cfg.Security.EncryptionKey
 	if len(encKey) != 32 {
@@ -98,12 +102,14 @@ func main() {
 	subRepo := pg.NewSubscriptionRepo(pool)
 	payRepo := pg.NewPaymentRepo(pool)
 	purchaseRepo := pg.NewPurchaseRepo(pool)
+	priceRepo := pg.NewModelPricingRepo(pool)
+	aiJobRepo := pg.NewAIJobRepo(pool)
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, logger)
+	userUC := usecase.NewUserUseCase(userRepo, txManager, logger)
 	planUC := usecase.NewPlanUseCase(planRepo, logger)
-	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
 
 	providers := map[string]adapter.AIServiceAdapter{}
 
@@ -141,15 +147,14 @@ func main() {
 	// composite used across the app
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
-	priceRepo := pg.NewModelPricingRepo(pool)
-	chatUC := usecase.NewChatUseCase(chatRepo, aiRouter, subUC, locker, logger, cfg.Runtime.Dev, priceRepo)
+	chatUC := usecase.NewChatUseCase(chatRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
 
 	// Payment gateway + use case
 	zp, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
-	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, logger)
+	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, txManager, logger)
 
 	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
 	notifUC := usecase.NewNotificationUseCase(subRepo, logger)
@@ -211,6 +216,23 @@ func main() {
 	}()
 
 	// ---- Background workers ----
+	appWorkerPool := worker.NewPool(cfg.Bot.Workers) // Use the same worker count as the bot
+	appWorkerPool.Start(ctx)
+	defer appWorkerPool.Stop()
+
+	aiProcessor := worker.NewAIJobProcessor(
+		aiJobRepo,
+		chatRepo,
+		priceRepo,
+		subUC,
+		aiRouter,
+		// botAdapter needs to be an interface that can be passed here
+		botAdapter,
+		txManager,
+		logger,
+	)
+	go aiProcessor.Start(ctx, appWorkerPool)
+
 	// Expiry worker: hourly sweep
 	expiryWorker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo, subUC)
 	go func() { _ = expiryWorker.Run(ctx) }()
