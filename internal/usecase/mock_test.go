@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"io"
 	"sort"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
+	"github.com/rs/zerolog"
 
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
@@ -229,13 +231,13 @@ func (r *MockUserRepo) Save(ctx context.Context, tx repository.Tx, u *model.User
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if u.ID == "" {
-		u.ID = uuid.NewString()
-	}
-	u.LastActiveAt = now()
 	cp := *u
-	r.byID[u.ID] = &cp
-	r.byTG[u.TelegramID] = &cp
+	if cp.ID == "" {
+		cp.ID = uuid.NewString()
+	}
+
+	r.byID[cp.ID] = &cp
+	r.byTG[cp.TelegramID] = &cp
 	return nil
 }
 
@@ -815,25 +817,30 @@ func (r *MockModelPricingRepo) Save(ctx context.Context, tx repository.Tx, p *mo
 // ---- Mock ChatSessionRepository ----
 
 type MockChatSessionRepo struct {
-	mu      sync.Mutex
-	byID    map[string]*model.ChatSession
-	msgByID map[string][]*model.ChatMessage // sessionID -> messages
+	mu            sync.Mutex
+	byID          map[string]*model.ChatSession
+	msgByID       map[string][]*model.ChatMessage // sessionID -> messages
+	usersBySessID map[string]*model.User          // sessionID -> user
 
-	SaveFunc               func(ctx context.Context, tx repository.Tx, s *model.ChatSession) error
-	SaveMessageFunc        func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error
-	DeleteFunc             func(ctx context.Context, tx repository.Tx, id string) error
-	FindActiveByUserFunc   func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error)
-	FindByIDFunc           func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error)
-	UpdateStatusFunc       func(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error
-	FindAllByUserFunc      func(ctx context.Context, tx repository.Tx, userID string) ([]*model.ChatSession, error) // legacy
-	ListByUserFunc         func(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
-	CleanupOldMessagesFunc func(ctx context.Context, userID string, retentionDays int) (int64, error)
+	SaveFunc                func(ctx context.Context, tx repository.Tx, s *model.ChatSession) error
+	SaveMessageFunc         func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error
+	DeleteFunc              func(ctx context.Context, tx repository.Tx, id string) error
+	FindActiveByUserFunc    func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error)
+	FindByIDFunc            func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error)
+	UpdateStatusFunc        func(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error
+	ListByUserFunc          func(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
+	CleanupOldMessagesFunc  func(ctx context.Context, userID string, retentionDays int) (int64, error)
+	FindUserBySessionIDFunc func(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error)
 }
 
 var _ repository.ChatSessionRepository = (*MockChatSessionRepo)(nil)
 
 func NewMockChatSessionRepo() *MockChatSessionRepo {
-	return &MockChatSessionRepo{byID: map[string]*model.ChatSession{}, msgByID: map[string][]*model.ChatMessage{}}
+	return &MockChatSessionRepo{
+		byID:          map[string]*model.ChatSession{},
+		msgByID:       map[string][]*model.ChatMessage{},
+		usersBySessID: map[string]*model.User{},
+	}
 }
 
 func (r *MockChatSessionRepo) Save(ctx context.Context, tx repository.Tx, s *model.ChatSession) error {
@@ -847,6 +854,10 @@ func (r *MockChatSessionRepo) Save(ctx context.Context, tx repository.Tx, s *mod
 	}
 	cp := *s
 	r.byID[s.ID] = &cp
+	// Also store the user for FindUserBySessionID lookups
+	if _, ok := r.usersBySessID[s.ID]; !ok {
+		r.usersBySessID[s.ID] = &model.User{ID: s.UserID, TelegramID: 12345} // Default TG ID for tests
+	}
 	return nil
 }
 
@@ -903,14 +914,22 @@ func (r *MockChatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id
 }
 
 func (r *MockChatSessionRepo) FindUserBySessionID(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error) {
-	s, err := r.FindByID(ctx, tx, sessionID)
-	if err != nil {
-		return nil, err
+	if r.FindUserBySessionIDFunc != nil {
+		return r.FindUserBySessionIDFunc(ctx, tx, sessionID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if user, ok := r.usersBySessID[sessionID]; ok {
+		return user, nil
 	}
 
-	var user model.User
-	user.ID = s.UserID
-	return &user, nil
+	// Fallback for sessions created without the user side-channel
+	if sess, ok := r.byID[sessionID]; ok {
+		return &model.User{ID: sess.UserID, TelegramID: 12345}, nil // Default TG ID
+	}
+
+	return nil, errors.New("user for session not found")
 }
 
 func (r *MockChatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
@@ -925,14 +944,6 @@ func (r *MockChatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx
 		return nil
 	}
 	return errors.New("not found")
-}
-
-// Legacy interface: implement via ListByUser(…, 0, 0)
-func (r *MockChatSessionRepo) FindAllByUser(ctx context.Context, tx repository.Tx, userID string) ([]*model.ChatSession, error) {
-	if r.FindAllByUserFunc != nil {
-		return r.FindAllByUserFunc(ctx, tx, userID)
-	}
-	return r.ListByUser(ctx, tx, userID, 0, 0)
 }
 
 func (r *MockChatSessionRepo) ListByUser(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error) {
@@ -968,6 +979,65 @@ func (r *MockChatSessionRepo) CleanupOldMessages(ctx context.Context, userID str
 	defer r.mu.Unlock()
 	// no-op for in-memory
 	return 0, nil
+}
+
+// ---- Mock AIJobRepository ----
+
+type MockAIJobRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.AIJob
+
+	SaveFunc                   func(ctx context.Context, tx repository.Tx, job *model.AIJob) error
+	FetchAndMarkProcessingFunc func(ctx context.Context) (*model.AIJob, error)
+}
+
+var _ repository.AIJobRepository = (*MockAIJobRepo)(nil)
+
+func NewMockAIJobRepo() *MockAIJobRepo {
+	return &MockAIJobRepo{data: map[string]*model.AIJob{}}
+}
+
+func (r *MockAIJobRepo) Save(ctx context.Context, tx repository.Tx, job *model.AIJob) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, tx, job)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if job.ID == "" {
+		job.ID = uuid.NewString()
+	}
+	cp := *job
+	r.data[job.ID] = &cp
+	return nil
+}
+
+func (r *MockAIJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJob, error) {
+	if r.FetchAndMarkProcessingFunc != nil {
+		return r.FetchAndMarkProcessingFunc(ctx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Find the oldest pending job
+	var oldestJob *model.AIJob
+	for _, job := range r.data {
+		if job.Status == model.AIJobStatusPending {
+			if oldestJob == nil || job.CreatedAt.Before(oldestJob.CreatedAt) {
+				j := *job
+				oldestJob = &j
+			}
+		}
+	}
+
+	if oldestJob == nil {
+		return nil, nil // No pending jobs found
+	}
+
+	// Mark as processing and return
+	jobToProcess := r.data[oldestJob.ID]
+	jobToProcess.Status = model.AIJobStatusProcessing
+	cp := *jobToProcess
+	return &cp, nil
 }
 
 // ---- Mock NotificationLogRepository ----
@@ -1024,13 +1094,21 @@ type MockTxManager struct {
 	WithTxFunc func(ctx context.Context, txOpt pgx.TxOptions, fn func(ctx context.Context, tx repository.Tx) error) error
 }
 
+func NewMockTxManager() *MockTxManager {
+	return &MockTxManager{}
+}
+
 var _ repository.TransactionManager = (*MockTxManager)(nil)
 
+// WithTx provides a way to control transaction behavior during tests.
+// By default, it runs the function immediately without a real transaction.
+// For specific transactional tests, you can assign a custom function to WithTxFunc.
 func (m *MockTxManager) WithTx(ctx context.Context, txOpt pgx.TxOptions, fn func(ctx context.Context, tx repository.Tx) error) error {
 	if m.WithTxFunc != nil {
 		return m.WithTxFunc(ctx, txOpt, fn)
 	}
-	// pass nil tx by default
+	// By default, execute the function immediately with NoTX.
+	// This is suitable for tests that don't need to verify transactional logic.
 	return fn(ctx, repository.NoTX)
 }
 
@@ -1068,4 +1146,11 @@ func (l *MockLocker) Unlock(ctx context.Context, key, token string) error {
 		return nil
 	}
 	return errors.New("unlock token mismatch")
+}
+
+// newTestLogger creates a silent zerolog.Logger for use in tests.
+// It writes to io.Discard to prevent logs from cluttering test output.
+func newTestLogger() *zerolog.Logger {
+	logger := zerolog.New(io.Discard)
+	return &logger
 }
