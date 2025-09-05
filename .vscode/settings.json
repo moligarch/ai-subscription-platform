@@ -5,7 +5,6 @@
             "-tags=integration"
         ]
     },
-    // --- ADD THIS BLOCK ---
     "go.testFlags": [
         "-v",
         "-tags=integration"
