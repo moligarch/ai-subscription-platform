@@ -186,6 +186,22 @@ CREATE INDEX IF NOT EXISTS idx_chat_messages_session_id ON chat_messages(session
 CREATE INDEX IF NOT EXISTS idx_chat_messages_created_at ON chat_messages(created_at);
 
 -- =============================================================
+-- AI PROCESSING JOBS (OUTBOX PATTERN)
+-- =============================================================
+CREATE TABLE IF NOT EXISTS ai_jobs (
+  id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  status               TEXT         NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+  session_id           UUID         NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+  user_message_id      UUID         NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  retries              INTEGER      NOT NULL DEFAULT 0,
+  last_error           TEXT,
+  created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  updated_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_jobs_status_created ON ai_jobs(status, created_at);
+
+-- =============================================================
 -- VIEWS (STATS)
 -- =============================================================
 -- Active = active + reserved (for business reporting)
