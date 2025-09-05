@@ -2,6 +2,8 @@ package model
 
 import (
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ChatSessionStatus string
@@ -13,6 +15,7 @@ const (
 
 // ChatMessage represents one message within a chat session.
 type ChatMessage struct {
+	ID        string
 	SessionID string
 	Role      string // "user" | "assistant" | "system"
 	Content   string
@@ -45,6 +48,7 @@ func NewChatSession(id, userID, model string) *ChatSession {
 
 func (s *ChatSession) AddMessage(role, content string, tokens int) {
 	s.Messages = append(s.Messages, ChatMessage{
+		ID:        uuid.NewString(),
 		SessionID: s.ID,
 		Role:      role,
 		Content:   content,

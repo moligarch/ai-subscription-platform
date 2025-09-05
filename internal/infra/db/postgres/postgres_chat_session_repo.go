@@ -98,10 +98,10 @@ func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *
 	}
 
 	const q = `
-INSERT INTO chat_messages (session_id, role, content, tokens, encrypted, created_at)
-VALUES ($1,$2,$3,$4,$5,COALESCE($6,NOW()));`
+INSERT INTO chat_messages (id, session_id, role, content, tokens, encrypted, created_at)
+VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()));`
 
-	_, err = execSQL(ctx, r.pool, tx, q, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
+	_, err = execSQL(ctx, r.pool, tx, q, m.ID, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
 	switch err {
 	case nil:
 		return nil
