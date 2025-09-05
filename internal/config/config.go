@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -36,9 +35,8 @@ type AdminConfig struct {
 }
 
 type DatabaseConfig struct {
-	URL string `yaml:"url"`
-	PoolMaxConns int `yaml:"max_conn"`
-	
+	URL          string `yaml:"url"`
+	PoolMaxConns int    `yaml:"max_conn"`
 }
 
 type RedisConfig struct {
@@ -154,21 +152,60 @@ func (c *Config) Redacted() SafeConfig {
 }
 
 func LoadConfig() (*Config, error) {
-	var configPath string = ""
+	var configPath string
 	var dev bool
 	flag.StringVar(&configPath, "config", "config.yaml", "path to config yaml")
 	flag.BoolVar(&dev, "dev", false, "development mode")
 	flag.Parse()
 
+	// Step 1: Load base config from YAML file
 	b, err := os.ReadFile(configPath)
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		// It's okay for the file to not exist if all config is provided by env vars
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
+		b = []byte{} // Use empty bytes if file doesn't exist
 	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
-	// defaults
+
+	// Step 2: Override with environment variables for secrets and key settings
+	// Bot
+	if token := os.Getenv("BOT_TOKEN"); token != "" {
+		cfg.Bot.Token = token
+	}
+	// Database
+	if dbURL := os.Getenv("DATABASE_URL"); dbURL != "" {
+		cfg.Database.URL = dbURL
+	}
+	// Redis
+	if redisURL := os.Getenv("REDIS_URL"); redisURL != "" {
+		cfg.Redis.URL = redisURL
+	}
+	// Security
+	if encKey := os.Getenv("SECURITY_ENCRYPTION_KEY"); encKey != "" {
+		cfg.Security.EncryptionKey = encKey
+	}
+	// AI Providers
+	if openAIKey := os.Getenv("AI_OPENAI_API_KEY"); openAIKey != "" {
+		cfg.AI.OpenAI.APIKey = openAIKey
+	}
+	if geminiKey := os.Getenv("AI_GEMINI_API_KEY"); geminiKey != "" {
+		cfg.AI.Gemini.APIKey = geminiKey
+	}
+	// Payment Gateway
+	if merchantID := os.Getenv("PAYMENT_ZARINPAL_MERCHANT_ID"); merchantID != "" {
+		cfg.Payment.ZarinPal.MerchantID = merchantID
+	}
+	if callbackURL := os.Getenv("PAYMENT_ZARINPAL_CALLBACK_URL"); callbackURL != "" {
+		cfg.Payment.ZarinPal.CallbackURL = callbackURL
+	}
+
+	// Step 3: Apply defaults for non-sensitive values
 	if cfg.Bot.Workers <= 0 {
 		cfg.Bot.Workers = 8
 	}
@@ -191,23 +228,12 @@ func LoadConfig() (*Config, error) {
 		cfg.AI.Gemini.DefaultModel = "gemini-1.5-flash"
 	}
 
-	// Minimal validation
-	if cfg.Bot.Token == "" {
-		return nil, errors.New("bot.token is required")
-	}
-	if cfg.Database.URL == "" {
-		return nil, errors.New("database.url is required")
-	}
-	if cfg.Redis.URL == "" {
-		return nil, errors.New("redis.url is required")
-	}
-
+	// Step 4: Final validation (will now use the merged config)
 	cfg.Runtime.Dev = dev
-
-	// Final validation (fail fast)
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
+
 	return &cfg, nil
 }
 
