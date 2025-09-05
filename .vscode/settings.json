@@ -1,0 +1,13 @@
+{
+    "go.build.tags": "integration",
+    "gopls": {
+        "build.buildFlags": [
+            "-tags=integration"
+        ]
+    },
+    // --- ADD THIS BLOCK ---
+    "go.testFlags": [
+        "-v",
+        "-tags=integration"
+    ]
+}
