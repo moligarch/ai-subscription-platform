@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+
+	"github.com/google/uuid"
 )
 
 // SubscriptionPlan represents a purchasable plan with a fixed duration,
@@ -21,8 +23,11 @@ func (p *SubscriptionPlan) IsZero() bool { return p == nil || p.ID == "" }
 
 // NewSubscriptionPlan validates and constructs a plan.
 func NewSubscriptionPlan(id, name string, durationDays int, credits int64, priceIRR int64) (*SubscriptionPlan, error) {
-	if id == "" || name == "" || durationDays <= 0 || credits < 0 || priceIRR <= 0 {
+	if name == "" || durationDays <= 0 || credits < 0 || priceIRR <= 0 {
 		return nil, domain.ErrInvalidArgument
+	}
+	if id == "" {
+		id = uuid.NewString()
 	}
 	return &SubscriptionPlan{
 		ID:           id,
