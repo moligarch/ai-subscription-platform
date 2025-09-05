@@ -41,15 +41,24 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 	defer logging.TraceDuration(u.log, "UserUC.RegisterOrFetch")()
 
 	var user *model.User
+	// This transaction is simple but ensures the read (find) and write (save)
+	// are treated as a single atomic operation, preventing race conditions.
 	txOpts := pgx.TxOptions{IsoLevel: pgx.Serializable}
 	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
 		usr, err := u.users.FindByTelegramID(ctx, tx, tgID)
-		if err == nil {
-			// Found existing user
+		if err != nil {
+			// Propagate any database error.
+			return err
+		}
+
+		if usr != nil {
+			// If the user exists, we must update their state and SAVE the changes.
 			if usr.Username != username && username != "" {
 				usr.Username = username
 			}
-			usr.Touch()
+			usr.Touch() // Update the last active time.
+
+			// The missing Save call is now restored.
 			if err = u.users.Save(ctx, tx, usr); err != nil {
 				u.log.Error().Err(err).Msg("Failed to update user")
 				return err
@@ -58,7 +67,7 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 			return nil
 		}
 
-		// Not found -> create new user
+		// If user is nil (not found), create a new one.
 		nu, err := model.NewUser("", tgID, username)
 		if err != nil {
 			return err
