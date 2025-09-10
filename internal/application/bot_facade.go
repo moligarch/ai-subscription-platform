@@ -79,19 +79,35 @@ func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationD
 }
 
 // HandleUpdatePlan updates an existing plan (admin).
-func (b *BotFacade) HandleUpdatePlan(ctx context.Context, id, name string, durationDays int, credits int64) (string, error) {
+func (b *BotFacade) HandleUpdatePlan(ctx context.Context, id, name string, durationDays int, credits, priceIRR int64) (string, error) {
 	plan, err := b.PlanUC.Get(ctx, id)
 	if err != nil {
+		// Translate a not found error to a user-friendly message
+		if errors.Is(err, domain.ErrNotFound) {
+			return "Plan not found with that ID.", nil
+		}
 		return "", fmt.Errorf("get plan: %w", err)
 	}
 	plan.Name = name
 	plan.DurationDays = durationDays
 	plan.Credits = credits
-	// No UpdatedAt field on model.SubscriptionPlan in your codebase; repo handles timestamps.
+	plan.PriceIRR = priceIRR // Set the new price
+
 	if err := b.PlanUC.Update(ctx, plan); err != nil {
 		return "", fmt.Errorf("update plan: %w", err)
 	}
 	return fmt.Sprintf("Plan %s updated.", id), nil
+}
+
+// HandleUpdatePricing updates model pricing (admin).
+func (b *BotFacade) HandleUpdatePricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) (string, error) {
+	if err := b.PlanUC.UpdatePricing(ctx, modelName, inputPrice, outputPrice); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return "Model pricing not found for that name.", nil
+		}
+		return "", fmt.Errorf("update pricing: %w", err)
+	}
+	return fmt.Sprintf("Pricing for model %s updated.", modelName), nil
 }
 
 // HandleDeletePlan deletes a plan (admin).

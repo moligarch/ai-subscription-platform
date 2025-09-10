@@ -3,7 +3,6 @@ package telegram
 import (
 	"context"
 	"errors"
-	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,8 +17,11 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
 )
+
+type commandHandler func(ctx context.Context, message *tgbotapi.Message) error
 
 // RealTelegramBotAdapter uses tgbotapi to poll updates and delegates to BotFacade.
 type RealTelegramBotAdapter struct {
@@ -111,6 +113,37 @@ func (r *RealTelegramBotAdapter) StartPolling(ctx context.Context) error {
 func (r *RealTelegramBotAdapter) StopPolling() {
 	if r.cancelPolling != nil {
 		r.cancelPolling()
+	}
+}
+
+// adminOnly is a middleware that wraps a commandHandler to restrict access to admins.
+func (r *RealTelegramBotAdapter) adminOnly(next commandHandler) commandHandler {
+	return func(ctx context.Context, message *tgbotapi.Message) error {
+		if _, isAdmin := r.adminIDsMap[message.From.ID]; !isAdmin {
+			metrics.IncAdminCommand("/"+message.Command(), "unauthorized")
+			return r.SendMessage(ctx, message.Chat.ID, "You are not authorized to use this command.")
+		}
+		metrics.IncAdminCommand("/"+message.Command(), "authorized")
+		return next(ctx, message)
+	}
+}
+
+// commandRoutes defines all available bot commands and their handlers.
+func (r *RealTelegramBotAdapter) commandRoutes() map[string]commandHandler {
+	return map[string]commandHandler{
+		"start":  r.handleStartCommand,
+		"plans":  r.handlePlansCommand,
+		"status": r.handleStatusCommand,
+		"buy":    r.handleBuyCommand,
+		"chat":   r.handleChatCommand,
+		"bye":    r.handleByeCommand,
+		"help":   r.handleHelpCommand,
+
+		// These handlers are wrapped in our adminOnly middleware.
+		"create_plan":    r.adminOnly(r.handleCreatePlanCommand),
+		"delete_plan":    r.adminOnly(r.handleDeletePlanCommand),
+		"update_plan":    r.adminOnly(r.handleUpdatePlanCommand),
+		"update_pricing": r.adminOnly(r.handleUpdatePricingCommand),
 	}
 }
 
@@ -209,140 +242,76 @@ func (b *RealTelegramBotAdapter) SendButtons(
 }
 
 func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbotapi.Update) error {
-	// ----- Inline button callbacks -----
+	// 1. Determine command type for metrics and rate limiting
+	var commandType string
+	var tgUser *tgbotapi.User
+	var chatID int64
+
 	if update.CallbackQuery != nil {
-		return r.handleQuery(ctx, update.CallbackQuery)
+		tgUser = update.CallbackQuery.From
+		chatID = update.CallbackQuery.Message.Chat.ID
+		parts := strings.Split(update.CallbackQuery.Data, ":")
+		if len(parts) > 0 {
+			commandType = "callback:" + parts[0]
+		} else {
+			commandType = "callback:unknown"
+		}
+	} else if update.Message != nil {
+		tgUser = update.Message.From
+		chatID = update.Message.Chat.ID
+		if update.Message.IsCommand() {
+			commandType = "/" + update.Message.Command()
+		} else if update.Message.Text != "" {
+			commandType = "message"
+		} else {
+			commandType = "other"
+		}
+	} else {
+		return nil // Not an update we can handle
 	}
 
-	// ----- Regular messages -----
-	if update.Message == nil {
-		return nil
-	}
-	tgUser := update.Message.From
 	if tgUser == nil {
 		return nil
 	}
 
-	// Basic rate limiting per user per command
-	cmd := strings.Fields(update.Message.Text)
-	command := "message"
-	if len(cmd) > 0 && strings.HasPrefix(cmd[0], "/") {
-		command = cmd[0]
-	}
+	metrics.IncTelegramCommand(commandType)
+
+	// 2. Rate Limiting
 	if r.rateLimiter != nil {
-		allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(int64(tgUser.ID), command), 20, time.Minute)
+		allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(tgUser.ID, commandType), 20, time.Minute)
 		if err != nil {
-			log.Printf("rate limit error: %v", err)
+			r.log.Error().Err(err).Msg("rate limit error")
 		} else if !allowed {
-			return r.SendMessage(ctx, int64(tgUser.ID), "Rate limit exceeded. Please try again later.")
+			metrics.IncRateLimitTriggered()
+			return r.SendMessage(ctx, chatID, "Rate limit exceeded. Please try again later.")
 		}
 	}
 
-	// /start → welcome + main menu buttons
-	if command == "/start" {
-		text, err := r.facade.HandleStart(ctx, int64(tgUser.ID), tgUser.UserName)
-		if err != nil {
-			return r.SendMessage(ctx, int64(tgUser.ID), "Failed to initialize user.")
-		}
-		// Show main menu as buttons (includes End Chat if already active)
-		if err := r.sendMainMenu(ctx, int64(tgUser.ID), text); err != nil {
-			// Fallback plain message on error
-			return r.SendMessage(ctx, int64(tgUser.ID), text)
-		}
-		return nil
+	// 3. Route the update
+	if update.CallbackQuery != nil {
+		return r.handleQuery(ctx, update.CallbackQuery)
 	}
 
-	switch command {
-	case "/plans", "/plan":
-		// Show plan list with buy buttons
-		return r.sendPlansMenu(ctx, int64(tgUser.ID))
-
-	case "/buy":
-		if len(cmd) < 2 {
-			return r.SendMessage(ctx, int64(tgUser.ID), "Usage: /buy <plan_id>")
+	if update.Message.IsCommand() {
+		if handler, ok := r.commandRoutes()[update.Message.Command()]; ok {
+			return handler(ctx, update.Message)
 		}
-		planID := cmd[1]
-		text, err := r.facade.HandleSubscribe(ctx, int64(tgUser.ID), planID)
-		if err != nil {
-			text = "Failed to initiate payment."
-		}
-		if url := extractFirstURL(text); url != "" {
-			rows := [][]adapter.InlineButton{
-				{{Text: "Pay now", URL: url}},
-			}
-			return r.SendButtons(ctx, int64(tgUser.ID), text, rows)
-		}
-		return r.SendMessage(ctx, int64(tgUser.ID), text)
-
-	case "/status", "/myplan":
-		text, err := r.facade.HandleStatus(ctx, int64(tgUser.ID))
-		if err != nil {
-			text = "Failed to get status."
-		}
-		return r.sendMainMenu(ctx, int64(tgUser.ID), text)
-
-	case "/balance":
-		text, err := r.facade.HandleBalance(ctx, int64(tgUser.ID))
-		if err != nil {
-			text = "Failed to get balance."
-		}
-		return r.SendMessage(ctx, int64(tgUser.ID), text)
-
-	case "/chat":
-		// If model not provided, show model picker buttons
-		if len(cmd) < 2 || strings.TrimSpace(cmd[1]) == "" {
-			return r.sendModelMenu(ctx, int64(tgUser.ID))
-		}
-		model := cmd[1]
-		text, err := r.facade.HandleStartChat(ctx, int64(tgUser.ID), model)
-		if err != nil {
-			if errors.Is(err, domain.ErrActiveChatExists) {
-				text = "You already have an active chat session."
-			} else {
-				text = "Failed to start chat."
-			}
-		}
-		if err := r.SendMessage(ctx, int64(tgUser.ID), text); err != nil {
-			return err
-		}
-		// After starting chat, show End Chat button
-		return r.sendEndChatButton(ctx, int64(tgUser.ID))
-
-	case "/bye":
-		// Resolve internal user by Telegram ID
-		user, err := r.facade.UserUC.GetByTelegramID(ctx, int64(tgUser.ID))
-		if err != nil || user == nil {
-			return r.SendMessage(ctx, int64(tgUser.ID), "No user found. Try /start first.")
-		}
-		// Find the active session for this internal user
-		sess, err := r.facade.ChatUC.FindActiveSession(ctx, user.ID)
-		if err != nil || sess == nil {
-			return r.SendMessage(ctx, int64(tgUser.ID), "No active chat session found.")
-		}
-		// End the found session via the facade
-		text, err := r.facade.HandleEndChat(ctx, int64(tgUser.ID), sess.ID)
-		if err != nil {
-			text = "Failed to end chat."
-		}
-		return r.SendMessage(ctx, int64(tgUser.ID), text)
-
-	case "/help":
-		reply := "Commands:\n/start - init\n/plans - list plans\n/status - subscription\n/chat - start chat\n/bye - end chat"
-		return r.SendMessage(ctx, int64(tgUser.ID), reply)
-
-	default:
-		// Chat flow: forward any text to HandleChatMessage if a session exists
-		if update.Message.Text != "" {
-			reply, err := r.facade.HandleChatMessage(ctx, int64(tgUser.ID), update.Message.Text)
-			if err != nil {
-				return r.SendMessage(ctx, int64(tgUser.ID), "Error: "+err.Error())
-			}
-			if strings.TrimSpace(reply) != "" {
-				return r.SendMessage(ctx, int64(tgUser.ID), reply)
-			}
-		}
-		return nil
+		return r.SendMessage(ctx, chatID, "Unknown command.")
 	}
+
+	if update.Message.Text != "" {
+		reply, err := r.facade.HandleChatMessage(ctx, tgUser.ID, update.Message.Text)
+		if err != nil {
+			r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("HandleChatMessage failed")
+			_ = r.SendMessage(ctx, chatID, "Sorry, I encountered an error.")
+			return nil
+		}
+		if strings.TrimSpace(reply) != "" {
+			return r.SendMessage(ctx, chatID, reply)
+		}
+	}
+
+	return nil
 }
 
 func (r *RealTelegramBotAdapter) handleQuery(ctx context.Context, query *tgbotapi.CallbackQuery) error {
@@ -368,6 +337,7 @@ func (r *RealTelegramBotAdapter) handleQuery(ctx context.Context, query *tgbotap
 	// Rate limit for callbacks
 	if r.rateLimiter != nil {
 		if allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(chatID, "cb:"+data), 30, time.Minute); err == nil && !allowed {
+			metrics.IncRateLimitTriggered()
 			return r.SendMessage(ctx, chatID, "تعداد درخواست غیرمجاز. دسترسی شما به مدت 30 دقیقه محدود شد.")
 		}
 	}

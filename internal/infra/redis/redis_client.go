@@ -9,6 +9,18 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+type RedisClient interface {
+	Ping(ctx context.Context) error
+	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+	Get(ctx context.Context, key string) (string, error)
+	Incr(ctx context.Context, key string) (int64, error)
+	Expire(ctx context.Context, key string, expiration time.Duration) error
+	Del(ctx context.Context, keys ...string) error
+	Close() error
+}
+
+var _ RedisClient = (*Client)(nil)
+
 type Client struct {
 	cli *redis.Client
 }
