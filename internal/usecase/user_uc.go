@@ -4,9 +4,11 @@ import (
 	"context"
 	"time"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/logging"
+	"telegram-ai-subscription/internal/infra/metrics"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
@@ -47,8 +49,10 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
 		usr, err := u.users.FindByTelegramID(ctx, tx, tgID)
 		if err != nil {
-			// Propagate any database error.
-			return err
+			if err != domain.ErrNotFound {
+				return err
+			}
+			u.log.Warn().Err(err).Int64("tg_id", tgID).Msg("Failed to find user by Telegram ID")
 		}
 
 		if usr != nil {
@@ -75,6 +79,8 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 		if err := u.users.Save(ctx, tx, nu); err != nil {
 			return err
 		}
+		metrics.IncUsersRegistered()
+
 		user = nu
 		return nil
 	})

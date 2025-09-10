@@ -18,16 +18,21 @@ type PlanUseCase interface {
 	List(ctx context.Context) ([]*model.SubscriptionPlan, error)
 	Get(ctx context.Context, id string) (*model.SubscriptionPlan, error)
 	Delete(ctx context.Context, id string) error
+	UpdatePricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error
 }
 
 type planUC struct {
-	plans repository.SubscriptionPlanRepository
-
-	log *zerolog.Logger
+	plans  repository.SubscriptionPlanRepository
+	prices repository.ModelPricingRepository
+	log    *zerolog.Logger
 }
 
-func NewPlanUseCase(plans repository.SubscriptionPlanRepository, logger *zerolog.Logger) *planUC {
-	return &planUC{plans: plans, log: logger}
+func NewPlanUseCase(plans repository.SubscriptionPlanRepository, prices repository.ModelPricingRepository, logger *zerolog.Logger) *planUC {
+	return &planUC{
+		plans:  plans,
+		prices: prices,
+		log:    logger,
+	}
 }
 
 func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error) {
@@ -57,4 +62,18 @@ func (p *planUC) Get(ctx context.Context, id string) (*model.SubscriptionPlan, e
 
 func (p *planUC) Delete(ctx context.Context, id string) error {
 	return p.plans.Delete(ctx, repository.NoTX, id)
+}
+
+func (p *planUC) UpdatePricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error {
+	// Note: GetByModelName only finds ACTIVE models. This is a safe default for this command.
+	pricing, err := p.prices.GetByModelName(ctx, nil, modelName)
+	if err != nil {
+		return err // Will be domain.ErrNotFound if not found
+	}
+
+	pricing.InputTokenPriceMicros = inputPrice
+	pricing.OutputTokenPriceMicros = outputPrice
+
+	// The repo was refactored to use Create/Update.
+	return p.prices.Update(ctx, nil, pricing)
 }

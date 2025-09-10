@@ -180,6 +180,29 @@ func (r *subscriptionRepo) TotalRemainingCredits(ctx context.Context, tx reposit
 	return n, nil
 }
 
+func (r *subscriptionRepo) CountByStatus(ctx context.Context, tx repository.Tx) (map[model.SubscriptionStatus]int, error) {
+	const q = `SELECT status, COUNT(*) FROM user_subscriptions GROUP BY status;`
+	rows, err := queryRows(ctx, r.pool, tx, q)
+	if err != nil {
+		return nil, domain.ErrOperationFailed
+	}
+	defer rows.Close()
+
+	counts := make(map[model.SubscriptionStatus]int)
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, domain.ErrReadDatabaseRow
+		}
+		counts[model.SubscriptionStatus(status)] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return counts, nil
+}
+
 func (r *subscriptionRepo) queryOne(ctx context.Context, tx repository.Tx, sql string, args ...any) (*model.UserSubscription, error) {
 	row, err := pickRow(ctx, r.pool, tx, sql, args...)
 	if err != nil {

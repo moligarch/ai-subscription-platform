@@ -183,4 +183,39 @@ func TestSubscriptionRepo_Integration(t *testing.T) {
 			t.Errorf("expected total credits to be %d, but got %d", expectedCredits, totalCredits)
 		}
 	})
+
+	t.Run("should correctly count subscriptions by status", func(t *testing.T) {
+		setupPrerequisites(t)
+
+		// Arrange: Create subs with various statuses
+		subActive1 := &model.UserSubscription{ID: uuid.NewString(), UserID: user1.ID, PlanID: proPlan.ID, Status: model.SubscriptionStatusActive}
+		subActive2 := &model.UserSubscription{ID: uuid.NewString(), UserID: user2.ID, PlanID: proPlan.ID, Status: model.SubscriptionStatusActive}
+		subReserved := &model.UserSubscription{ID: uuid.NewString(), UserID: user1.ID, PlanID: stdPlan.ID, Status: model.SubscriptionStatusReserved}
+		subFinished := &model.UserSubscription{ID: uuid.NewString(), UserID: user2.ID, PlanID: stdPlan.ID, Status: model.SubscriptionStatusFinished}
+
+		repo.Save(ctx, nil, subActive1)
+		repo.Save(ctx, nil, subActive2)
+		repo.Save(ctx, nil, subReserved)
+		repo.Save(ctx, nil, subFinished)
+
+		// Act
+		counts, err := repo.CountByStatus(ctx, nil)
+		if err != nil {
+			t.Fatalf("CountByStatus failed: %v", err)
+		}
+
+		// Assert
+		if len(counts) != 3 {
+			t.Errorf("Expected counts for 3 statuses, but got %d", len(counts))
+		}
+		if counts[model.SubscriptionStatusActive] != 2 {
+			t.Errorf("Expected 2 active subs, but got %d", counts[model.SubscriptionStatusActive])
+		}
+		if counts[model.SubscriptionStatusReserved] != 1 {
+			t.Errorf("Expected 1 reserved sub, but got %d", counts[model.SubscriptionStatusReserved])
+		}
+		if counts[model.SubscriptionStatusFinished] != 1 {
+			t.Errorf("Expected 1 finished sub, but got %d", counts[model.SubscriptionStatusFinished])
+		}
+	})
 }
