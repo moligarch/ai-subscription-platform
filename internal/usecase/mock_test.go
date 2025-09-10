@@ -377,6 +377,7 @@ type MockSubscriptionRepo struct {
 	TotalRemainingCreditsFunc   func(ctx context.Context, tx repository.Tx) (int64, error)
 	UpdateRemainingCreditsFunc  func(ctx context.Context, tx repository.Tx, id string, delta int64) error
 	UpdateStatusFunc            func(ctx context.Context, tx repository.Tx, id string, status model.SubscriptionStatus) error
+	CountByStatusFunc           func(ctx context.Context, tx repository.Tx) (map[model.SubscriptionStatus]int, error)
 }
 
 var _ repository.SubscriptionRepository = (*MockSubscriptionRepo)(nil)
@@ -533,6 +534,19 @@ func (r *MockSubscriptionRepo) UpdateStatus(ctx context.Context, tx repository.T
 		return nil
 	}
 	return errors.New("not found")
+}
+
+func (r *MockSubscriptionRepo) CountByStatus(ctx context.Context, tx repository.Tx) (map[model.SubscriptionStatus]int, error) {
+	if r.CountByStatusFunc != nil {
+		return r.CountByStatusFunc(ctx, tx)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	counts := make(map[model.SubscriptionStatus]int)
+	for _, s := range r.data {
+		counts[s.Status]++
+	}
+	return counts, nil
 }
 
 // ---- Mock PaymentRepository ----

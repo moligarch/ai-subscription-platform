@@ -17,7 +17,8 @@ func TestPlanUseCase(t *testing.T) {
 	t.Run("Create should save a new plan", func(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, testLogger)
+		mockPricingRepo := NewMockModelPricingRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
 		name := "Pro Plan"
 		duration := 30
@@ -51,7 +52,8 @@ func TestPlanUseCase(t *testing.T) {
 	t.Run("Update should save changes to an existing plan", func(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, testLogger)
+		mockPricingRepo := NewMockModelPricingRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
 		// Seed the repo with an existing plan
 		existingPlan := &model.SubscriptionPlan{
@@ -86,7 +88,9 @@ func TestPlanUseCase(t *testing.T) {
 		t.Run("should succeed for an unused plan", func(t *testing.T) {
 			// --- Arrange ---
 			mockPlanRepo := NewMockPlanRepo()
-			uc := usecase.NewPlanUseCase(mockPlanRepo, testLogger)
+			mockPricingRepo := NewMockModelPricingRepo()
+			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+
 			planToDelete := &model.SubscriptionPlan{ID: "plan-to-delete"}
 			mockPlanRepo.Save(ctx, nil, planToDelete)
 
@@ -111,7 +115,9 @@ func TestPlanUseCase(t *testing.T) {
 			mockPlanRepo.DeleteFunc = func(ctx context.Context, id string) error {
 				return domain.ErrSubsciptionWithActiveUser
 			}
-			uc := usecase.NewPlanUseCase(mockPlanRepo, testLogger)
+			// --- Arrange ---
+			mockPricingRepo := NewMockModelPricingRepo()
+			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
 			// --- Act ---
 			err := uc.Delete(ctx, "plan-in-use")
@@ -129,7 +135,8 @@ func TestPlanUseCase(t *testing.T) {
 	t.Run("Get and List should retrieve plans correctly", func(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, testLogger)
+		mockPricingRepo := NewMockModelPricingRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
 		plan1 := &model.SubscriptionPlan{ID: "plan-1", PriceIRR: 100}
 		plan2 := &model.SubscriptionPlan{ID: "plan-2", PriceIRR: 200}
