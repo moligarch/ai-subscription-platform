@@ -14,6 +14,7 @@ import (
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/adapters/ai"
 	payAdapters "telegram-ai-subscription/internal/infra/adapters/payment"
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
@@ -27,7 +28,13 @@ import (
 	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 
+	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
+)
+
+var (
+	Version = "dev"
+	Commit  = "none"
 )
 
 func main() {
@@ -62,6 +69,7 @@ func main() {
 
 	// ---- Metrics ----
 	appmetrics.MustRegister()
+	appmetrics.SetBuildInfo(Version, Commit)
 
 	// ---- Redis ----
 	redisClient, err := red.NewClient(ctx, &cfg.Redis)
@@ -97,18 +105,25 @@ func main() {
 	}
 
 	// ---- Repositories ----
-	userRepo := pg.NewUserRepo(pool)
-	planRepo := pg.NewPlanRepo(pool)
+	dbUserRepo := pg.NewUserRepo(pool)
+	userRepo := pg.NewUserRepoCacheDecorator(dbUserRepo, redisClient)
+
+	dbPlanRepo := pg.NewPlanRepo(pool)
+	planRepo := pg.NewPlanRepoCacheDecorator(dbPlanRepo, redisClient)
+
 	subRepo := pg.NewSubscriptionRepo(pool)
 	payRepo := pg.NewPaymentRepo(pool)
 	purchaseRepo := pg.NewPurchaseRepo(pool)
-	priceRepo := pg.NewModelPricingRepo(pool)
+
+	dbPriceRepo := pg.NewModelPricingRepo(pool)
+	priceRepo := pg.NewModelPricingRepoCacheDecorator(dbPriceRepo, redisClient)
+
 	aiJobRepo := pg.NewAIJobRepo(pool)
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	// ---- Use Cases ----
 	userUC := usecase.NewUserUseCase(userRepo, txManager, logger)
-	planUC := usecase.NewPlanUseCase(planRepo, logger)
+	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
 
 	providers := map[string]adapter.AIServiceAdapter{}
@@ -216,6 +231,7 @@ func main() {
 	}()
 
 	// ---- Background workers ----
+	go startMetricsCollector(ctx, pool, subRepo, logger)
 	appWorkerPool := worker.NewPool(cfg.Bot.Workers) // Use the same worker count as the bot
 	appWorkerPool.Start(ctx)
 	defer appWorkerPool.Stop()
@@ -234,7 +250,7 @@ func main() {
 	go aiProcessor.Start(ctx, appWorkerPool)
 
 	// Expiry worker: hourly sweep
-	expiryWorker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo, subUC)
+	expiryWorker := sched.NewExpiryWorker(1*time.Hour, subRepo, planRepo, subUC, logger)
 	go func() { _ = expiryWorker.Run(ctx) }()
 
 	// Payment reconciler: periodically reconcile stuck/pending payments
@@ -247,4 +263,33 @@ func main() {
 	<-sigc
 	logger.Info().Msg("shutdown requested")
 	cancel()
+}
+
+func startMetricsCollector(ctx context.Context, pool *pgxpool.Pool, subRepo repository.SubscriptionRepository, log *zerolog.Logger) {
+	cpLog := log.With().Str("component", "MetricsCollector").Logger()
+	log = &cpLog
+	log.Info().Msg("Starting metrics collector")
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("Stopping metrics collector")
+			return
+		case <-ticker.C:
+			// Collect DB Pool Stats
+			stats := pool.Stat()
+			appmetrics.SetDBPoolStats(stats.TotalConns(), stats.IdleConns(), stats.AcquiredConns())
+
+			// Collect Subscription Stats
+			subCounts, err := subRepo.CountByStatus(ctx, nil)
+			if err != nil {
+				log.Error().Err(err).Msg("failed to collect subscription stats")
+			} else {
+				appmetrics.SetSubscriptionsTotal(subCounts)
+			}
+		}
+	}
 }
