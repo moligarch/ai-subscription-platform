@@ -225,5 +225,6 @@ func (u *paymentUC) confirmPaymentInTx(ctx context.Context, tx repository.Tx, p 
 	}
 
 	metrics.IncPayment("succeeded")
+	metrics.AddPaymentRevenue(p.Currency, p.Amount)
 	return p, nil
 }

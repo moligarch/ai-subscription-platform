@@ -95,6 +95,7 @@ func (p *AIJobProcessor) processOne(ctx context.Context) {
 		p.log.Error().Err(err).Str("job_id", job.ID).Msg("AI job failed")
 	}
 
+	metrics.IncAIJob(string(finalStatus))
 	job.Status = finalStatus
 	_ = p.jobsRepo.Save(context.Background(), nil, job) // Use background context for final update
 	p.log.Info().Str("job_id", job.ID).Str("status", string(finalStatus)).Dur("duration_ms", latency).Msg("AI job finished")
@@ -111,8 +112,6 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 	if err != nil {
 		return fmt.Errorf("pricing not found: %w", err)
 	}
-
-	// 2. Check user subscription and balance (this is the real credit check)
 	activeSub, err := p.subUC.GetActive(ctx, session.UserID)
 	if err != nil {
 		return domain.ErrNoActiveSubscription
@@ -136,15 +135,32 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 		return domain.ErrInsufficientBalance
 	}
 
-	// 3. Call the external AI service
+	// 2. Call the external AI service
 	callStart := time.Now()
 	reply, usage, err := p.aiAdapter.ChatWithUsage(ctx, session.Model, adapterMsgs)
+	latency := time.Since(callStart) // Calculate latency immediately
+
+	// We now handle metrics for both success and failure cases here.
 	if err != nil {
-		metrics.ObserveChatUsage("provider_guess", session.Model, 0, 0, 0, 0, int(time.Since(callStart)/time.Millisecond), false)
+		metrics.ObserveChatUsage("provider_guess", session.Model, 0, 0, 0, 0, int(latency/time.Millisecond), false)
 		return fmt.Errorf("ai adapter failed: %w", err)
 	}
 
-	// 4. Final atomic write: save reply, update credits
+	// Calculate exact cost and fire off the success metric
+	spent := int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
+		int64(usage.CompletionTokens)*pricing.OutputTokenPriceMicros
+
+	metrics.ObserveChatUsage(
+		"provider_guess", session.Model,
+		usage.PromptTokens,
+		usage.CompletionTokens,
+		usage.TotalTokens,
+		spent,
+		int(latency/time.Millisecond),
+		true, // Success
+	)
+
+	// 3. Final atomic write: save reply, update credits
 	return p.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
 		// Save assistant message
 		aiMsg := model.ChatMessage{
@@ -166,10 +182,11 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 			return err
 		}
 
-		// 5. Send message back to the user
+		// Send message back to the user
 		user, err := p.chatRepo.FindUserBySessionID(ctx, tx, session.ID)
 		if err != nil {
-			return err
+			p.log.Error().Err(err).Str("session_id", session.ID).Msg("could not find user to send AI reply")
+			return nil // Don't fail the transaction, just log the error
 		}
 
 		if err := p.botAdapter.SendMessage(ctx, user.TelegramID, reply); err != nil {
