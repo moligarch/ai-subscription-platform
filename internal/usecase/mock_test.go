@@ -3,6 +3,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -1071,46 +1072,49 @@ func (r *MockAIJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJo
 
 // ---- Mock NotificationLogRepository ----
 
+// MockNotificationLogRepo mocks the repository for tracking sent notifications.
 type MockNotificationLogRepo struct {
-	mu      sync.Mutex
-	entries map[string]map[int]struct{} // subscriptionID -> set(thresholdDays)
+	mu sync.Mutex
+	// The key is a composite: "subscriptionID:kind:thresholdDays"
+	entries map[string]struct{}
 
-	SaveExpiryFunc   func(ctx context.Context, tx repository.Tx, subscriptionID, userID string, thresholdDays int) error
-	ExistsExpiryFunc func(ctx context.Context, tx repository.Tx, subscriptionID string, thresholdDays int) (bool, error)
+	SaveFunc   func(ctx context.Context, tx repository.Tx, subscriptionID, userID, kind string, thresholdDays int) error
+	ExistsFunc func(ctx context.Context, tx repository.Tx, subscriptionID, kind string, thresholdDays int) (bool, error)
 }
 
 var _ repository.NotificationLogRepository = (*MockNotificationLogRepo)(nil)
 
 func NewMockNotificationLogRepo() *MockNotificationLogRepo {
 	return &MockNotificationLogRepo{
-		entries: make(map[string]map[int]struct{}),
+		entries: make(map[string]struct{}),
 	}
 }
 
-func (r *MockNotificationLogRepo) SaveExpiry(ctx context.Context, tx repository.Tx, subscriptionID, userID string, thresholdDays int) error {
-	if r.SaveExpiryFunc != nil {
-		return r.SaveExpiryFunc(ctx, tx, subscriptionID, userID, thresholdDays)
+// makeKey is a helper to create a consistent key for the in-memory map.
+func (r *MockNotificationLogRepo) makeKey(subscriptionID, kind string, thresholdDays int) string {
+	return fmt.Sprintf("%s:%s:%d", subscriptionID, kind, thresholdDays)
+}
+
+func (r *MockNotificationLogRepo) Save(ctx context.Context, tx repository.Tx, subscriptionID, userID, kind string, thresholdDays int) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, tx, subscriptionID, userID, kind, thresholdDays)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.entries[subscriptionID]; !ok {
-		r.entries[subscriptionID] = make(map[int]struct{})
-	}
-	r.entries[subscriptionID][thresholdDays] = struct{}{}
+	key := r.makeKey(subscriptionID, kind, thresholdDays)
+	r.entries[key] = struct{}{}
 	return nil
 }
 
-func (r *MockNotificationLogRepo) ExistsExpiry(ctx context.Context, tx repository.Tx, subscriptionID string, thresholdDays int) (bool, error) {
-	if r.ExistsExpiryFunc != nil {
-		return r.ExistsExpiryFunc(ctx, tx, subscriptionID, thresholdDays)
+func (r *MockNotificationLogRepo) Exists(ctx context.Context, tx repository.Tx, subscriptionID, kind string, thresholdDays int) (bool, error) {
+	if r.ExistsFunc != nil {
+		return r.ExistsFunc(ctx, tx, subscriptionID, kind, thresholdDays)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if days, ok := r.entries[subscriptionID]; ok {
-		_, exists := days[thresholdDays]
-		return exists, nil
-	}
-	return false, nil
+	key := r.makeKey(subscriptionID, kind, thresholdDays)
+	_, exists := r.entries[key]
+	return exists, nil
 }
 
 // =============================
