@@ -69,7 +69,7 @@ func main() {
 	}
 
 	// ---- Localization ----
-	translator, err := i18n.NewTranslator("fa")
+	translator, err := i18n.NewTranslator(i18n.LocalesFS, "fa")
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to load translations")
 	}

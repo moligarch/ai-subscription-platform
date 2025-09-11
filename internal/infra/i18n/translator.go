@@ -3,45 +3,53 @@ package i18n
 import (
 	"embed"
 	"fmt"
+	"io/fs" // <-- This package contains the correct ReadFile function
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
 
 //go:embed locales
-var localesFS embed.FS
+var LocalesFS embed.FS
 
-type Translator interface {
-	T(key string, args ...interface{}) string
-}
-
-type translator struct {
+// Translator interface and struct are unchanged...
+type Translator struct {
 	translations map[string]string
+	policyText   string
 }
 
-// newTranslatorFromBytes is an internal constructor that parses raw YAML data.
-// This allows us to create a translator from any source, making testing easy.
-func newTranslatorFromBytes(data []byte) (Translator, error) {
+// NewTranslator is now more flexible and testable.
+func NewTranslator(fsys fs.FS, langCode string) (*Translator, error) {
+	filePath := filepath.Join("locales", fmt.Sprintf("%s.yaml", langCode))
+
+	// Use the fs.ReadFile function, which works with any fs.FS interface.
+	data, err := fs.ReadFile(fsys, filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read translation file %s: %w", filePath, err)
+	}
+
 	var translations map[string]string
 	if err := yaml.Unmarshal(data, &translations); err != nil {
-		return nil, fmt.Errorf("failed to parse translation data: %w", err)
+		return nil, fmt.Errorf("failed to parse translation file: %w", err)
 	}
-	return &translator{translations: translations}, nil
-}
 
-// NewTranslator loads a specific language from the embedded filesystem for production use.
-func NewTranslator(langCode string) (Translator, error) {
-	filePath := filepath.Join("locales", fmt.Sprintf("%s.yaml", langCode))
-	data, err := localesFS.ReadFile(filePath)
+	// Incorporating your improvement for language-specific policy files.
+	policyPath := filepath.Join("locales", fmt.Sprintf("policy-%s.txt", langCode))
+
+	// Use the fs.ReadFile function here as well.
+	policyBytes, err := fs.ReadFile(fsys, policyPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read embedded translation file %s: %w", filePath, err)
+		return nil, fmt.Errorf("failed to read policy file %s: %w", policyPath, err)
 	}
-	// Call the internal constructor with the data from the embedded file.
-	return newTranslatorFromBytes(data)
+
+	return &Translator{
+		translations: translations,
+		policyText:   string(policyBytes),
+	}, nil
 }
 
 // T (Translate) function remains the same.
-func (t *translator) T(key string, args ...interface{}) string {
+func (t *Translator) T(key string, args ...interface{}) string {
 	format, ok := t.translations[key]
 	if !ok {
 		return key
@@ -50,4 +58,8 @@ func (t *translator) T(key string, args ...interface{}) string {
 		return fmt.Sprintf(format, args...)
 	}
 	return format
+}
+
+func (t *Translator) Policy() string {
+	return t.policyText
 }
