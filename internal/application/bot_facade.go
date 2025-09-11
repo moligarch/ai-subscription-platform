@@ -158,80 +158,61 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 	return msg, nil
 }
 
-// HandleStatus shows active/reserved subscription.
-func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (string, error) {
-	user, _ := f.UserUC.GetByTelegramID(ctx, telegramID)
-	if user == nil {
-		return "No user found. Try /start first.", nil
+// ReservedPlanInfo holds details for a single reserved plan.
+type ReservedPlanInfo struct {
+	PlanName         string
+	ScheduledStartAt *time.Time
+}
+
+// StatusInfo is a struct to hold status data for easy localization.
+type StatusInfo struct {
+	ActivePlanName  string
+	ActiveCredits   int64
+	ActiveExpiresAt *time.Time
+	HasActiveSub    bool
+	ReservedPlan    *ReservedPlanInfo
+	HasReservedSub  bool
+}
+
+// HandleStatus now returns the StatusInfo struct.
+func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (*StatusInfo, error) {
+	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
+	if err != nil || user == nil {
+		return nil, errors.New("user not found")
 	}
 
-	var b strings.Builder
-	b.WriteString("📊 Status\n\n")
+	info := &StatusInfo{}
 
-	// Active
-	active, err := f.SubscriptionUC.GetActive(ctx, user.ID)
-	if err != nil && !errors.Is(err, domain.ErrNotFound) {
-		// Log and handle unexpected errors.
-		return "Could not retrieve your subscription status.", err
-	}
+	// Active subscription
+	active, _ := f.SubscriptionUC.GetActive(ctx, user.ID)
 	if active != nil {
-		planName := active.PlanID
-		if f.PlanUC != nil {
-			if plan, _ := f.PlanUC.Get(ctx, active.PlanID); plan != nil {
-				planName = plan.Name
-			}
+		info.HasActiveSub = true
+		info.ActiveCredits = active.RemainingCredits
+		info.ActiveExpiresAt = active.ExpiresAt
+		if plan, err := f.PlanUC.Get(ctx, active.PlanID); err == nil {
+			info.ActivePlanName = plan.Name
+		} else {
+			info.ActivePlanName = active.PlanID // Fallback to ID
 		}
-		b.WriteString("✅ Active: ")
-		b.WriteString(planName)
-
-		// credits
-		if active.RemainingCredits > 0 {
-			b.WriteString(fmt.Sprintf("\n  - credits:  %d", active.RemainingCredits))
-		}
-
-		// expiry
-		if active.ExpiresAt != nil {
-			days := int(time.Until(*active.ExpiresAt).Hours() / 24)
-			if days < 0 {
-				days = 0
-			}
-			b.WriteString(fmt.Sprintf("\n  - expires: %s (%dd left)", active.ExpiresAt.Format("2006-01-02"), days))
-		}
-		b.WriteString("\n\n")
-	} else {
-		b.WriteString("• Active: none\n")
 	}
 
-	// Reserved (list all)
+	// Reserved subscriptions
 	reserved, _ := f.SubscriptionUC.GetReserved(ctx, user.ID)
 	if len(reserved) > 0 {
-		b.WriteString("• Reserved:\n")
+		info.HasReservedSub = true
 		for _, rs := range reserved {
-			planName := rs.PlanID
-			if f.PlanUC != nil {
-				if plan, _ := f.PlanUC.Get(ctx, rs.PlanID); plan != nil {
-					planName = plan.Name
-				}
+			planName := rs.PlanID // Fallback to ID
+			if plan, err := f.PlanUC.Get(ctx, rs.PlanID); err == nil {
+				planName = plan.Name
 			}
-			line := "📌 " + planName
-			// Optional: show scheduled start if present
-			if rs.ScheduledStartAt != nil {
-				line += fmt.Sprintf("\n  - scheduled: %s", rs.ScheduledStartAt.Format("2006-01-02"))
+			info.ReservedPlan = &ReservedPlanInfo{
+				PlanName:         planName,
+				ScheduledStartAt: rs.ScheduledStartAt,
 			}
-			// Show credits/expiry if pre-filled (depends on your UC policy)
-			if rs.RemainingCredits > 0 {
-				line += fmt.Sprintf("\n  - credits: %d", rs.RemainingCredits)
-			}
-			if rs.ExpiresAt != nil {
-				line += fmt.Sprintf("\n  - expires: %s", rs.ExpiresAt.Format("2006-01-02"))
-			}
-			b.WriteString(line + "\n")
 		}
-	} else {
-		b.WriteString("• Reserved: none\n")
 	}
 
-	return b.String(), nil
+	return info, nil
 }
 
 // HandleBalance shows remaining credits of active sub.

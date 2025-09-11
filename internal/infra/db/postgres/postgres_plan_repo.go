@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/domain"
@@ -62,6 +64,9 @@ SELECT COUNT(1)
 
 	var n int
 	if err := row.Scan(&n); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.ErrNotFound
+		}
 		return domain.ErrReadDatabaseRow
 	}
 
@@ -94,6 +99,9 @@ func (r *planRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*
 
 	var p model.SubscriptionPlan
 	if err := row.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.CreatedAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
 		return nil, domain.ErrReadDatabaseRow
 	}
 	return &p, nil
@@ -116,6 +124,9 @@ func (r *planRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.Subs
 	for rows.Next() {
 		var p model.SubscriptionPlan
 		if err := rows.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.CreatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		out = append(out, &p)

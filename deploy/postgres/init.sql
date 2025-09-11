@@ -2,6 +2,22 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 -- =============================================================
+-- ENUM TYPES
+-- =============================================================
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'subscription_status') THEN
+    CREATE TYPE subscription_status AS ENUM ('reserved','active','finished','cancelled');
+  END IF;
+  
+  -- Add a new type for user registration status
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'user_registration_status') THEN
+    CREATE TYPE user_registration_status AS ENUM ('pending', 'completed');
+  END IF;
+END$$;
+
+
+-- =============================================================
 -- USERS
 -- =============================================================
 -- Privacy and admin flags are included to support v1 features and future panel.
@@ -9,6 +25,9 @@ CREATE TABLE IF NOT EXISTS users (
   id                      UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
   telegram_id             BIGINT       NOT NULL UNIQUE,
   username                TEXT,
+  full_name               TEXT,
+  phone_number            TEXT,
+  registration_status     user_registration_status NOT NULL DEFAULT 'pending', -- NEW
   registered_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
   last_active_at          TIMESTAMPTZ  NULL,
   -- Privacy
@@ -27,12 +46,6 @@ CREATE INDEX IF NOT EXISTS idx_users_last_active ON users(last_active_at);
 -- =============================================================
 -- price_irr is defaulted to 0 initially to avoid breaking older code paths
 -- until repositories are updated to set a proper price.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'subscription_status') THEN
-    CREATE TYPE subscription_status AS ENUM ('reserved','active','finished','cancelled');
-  END IF;
-END$$;
 
 CREATE TABLE IF NOT EXISTS subscription_plans (
   id             UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -192,7 +205,7 @@ CREATE TABLE IF NOT EXISTS ai_jobs (
   id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
   status               TEXT         NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
   session_id           UUID         NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  user_message_id      UUID         NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  user_message_id      UUID         NULL REFERENCES chat_messages(id) ON DELETE CASCADE, -- This column is now NULLABLE
   retries              INTEGER      NOT NULL DEFAULT 0,
   last_error           TEXT,
   created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),

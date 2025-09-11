@@ -1,21 +1,27 @@
+//go:build !integration
+
 package usecase_test
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v2"
 
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/i18n"
 )
 
 // -----------------------------
@@ -38,48 +44,31 @@ func cloneMessages(ms []*model.ChatMessage) []model.ChatMessage {
 
 // ---- Mock TelegramBotAdapter ----
 
+// MockTelegramBot now implements the new SendMessage(SendMessageParams) interface.
 type MockTelegramBot struct {
 	mu   sync.Mutex
-	Sent []struct {
-		ID   int64
-		Text string
-	}
-	SentBtns []struct {
-		ID   int64
-		Text string
-		Rows [][]adapter.InlineButton
-	}
+	Sent []adapter.SendMessageParams // Capture all sent message parameters
 
-	SendMessageFunc func(ctx context.Context, telegramID int64, text string) error
-	SendButtonsFunc func(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error
+	SendMessageFunc     func(ctx context.Context, params adapter.SendMessageParams) error
+	SetMenuCommandsFunc func(ctx context.Context, chatID int64, isAdmin bool) error
 }
 
 var _ adapter.TelegramBotAdapter = (*MockTelegramBot)(nil)
 
-func (m *MockTelegramBot) SendMessage(ctx context.Context, telegramID int64, text string) error {
+func (m *MockTelegramBot) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
 	if m.SendMessageFunc != nil {
-		return m.SendMessageFunc(ctx, telegramID, text)
+		return m.SendMessageFunc(ctx, params)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Sent = append(m.Sent, struct {
-		ID   int64
-		Text string
-	}{telegramID, text})
+	m.Sent = append(m.Sent, params)
 	return nil
 }
 
-func (m *MockTelegramBot) SendButtons(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error {
-	if m.SendButtonsFunc != nil {
-		return m.SendButtonsFunc(ctx, telegramID, text, rows)
+func (m *MockTelegramBot) SetMenuCommands(ctx context.Context, chatID int64, isAdmin bool) error {
+	if m.SetMenuCommandsFunc != nil {
+		return m.SetMenuCommandsFunc(ctx, chatID, isAdmin)
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.SentBtns = append(m.SentBtns, struct {
-		ID   int64
-		Text string
-		Rows [][]adapter.InlineButton
-	}{telegramID, text, rows})
 	return nil
 }
 
@@ -852,7 +841,7 @@ type MockChatSessionRepo struct {
 	usersBySessID map[string]*model.User          // sessionID -> user
 
 	SaveFunc                func(ctx context.Context, tx repository.Tx, s *model.ChatSession) error
-	SaveMessageFunc         func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error
+	SaveMessageFunc         func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) (bool, error)
 	DeleteFunc              func(ctx context.Context, tx repository.Tx, id string) error
 	FindActiveByUserFunc    func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error)
 	FindByIDFunc            func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error)
@@ -860,6 +849,7 @@ type MockChatSessionRepo struct {
 	ListByUserFunc          func(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
 	CleanupOldMessagesFunc  func(ctx context.Context, userID string, retentionDays int) (int64, error)
 	FindUserBySessionIDFunc func(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error)
+	DeleteAllByUserIDFunc   func(ctx context.Context, tx repository.Tx, userID string) error
 }
 
 var _ repository.ChatSessionRepository = (*MockChatSessionRepo)(nil)
@@ -890,7 +880,7 @@ func (r *MockChatSessionRepo) Save(ctx context.Context, tx repository.Tx, s *mod
 	return nil
 }
 
-func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error {
+func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) (bool, error) {
 	if r.SaveMessageFunc != nil {
 		return r.SaveMessageFunc(ctx, tx, m)
 	}
@@ -898,7 +888,7 @@ func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx,
 	defer r.mu.Unlock()
 	cp := *m
 	r.msgByID[m.SessionID] = append(r.msgByID[m.SessionID], &cp)
-	return nil
+	return true, nil
 }
 
 func (r *MockChatSessionRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
@@ -1010,6 +1000,22 @@ func (r *MockChatSessionRepo) CleanupOldMessages(ctx context.Context, userID str
 	return 0, nil
 }
 
+func (r *MockChatSessionRepo) DeleteAllByUserID(ctx context.Context, tx repository.Tx, userID string) error {
+	if r.DeleteAllByUserIDFunc != nil {
+		return r.DeleteAllByUserIDFunc(ctx, tx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range r.byID {
+		if s.UserID == userID {
+			delete(r.byID, id)
+			delete(r.msgByID, id)
+			delete(r.usersBySessID, id)
+		}
+	}
+	return nil
+}
+
 // ---- Mock AIJobRepository ----
 
 type MockAIJobRepo struct {
@@ -1071,46 +1077,103 @@ func (r *MockAIJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJo
 
 // ---- Mock NotificationLogRepository ----
 
+// MockNotificationLogRepo mocks the repository for tracking sent notifications.
 type MockNotificationLogRepo struct {
-	mu      sync.Mutex
-	entries map[string]map[int]struct{} // subscriptionID -> set(thresholdDays)
+	mu sync.Mutex
+	// The key is a composite: "subscriptionID:kind:thresholdDays"
+	entries map[string]struct{}
 
-	SaveExpiryFunc   func(ctx context.Context, tx repository.Tx, subscriptionID, userID string, thresholdDays int) error
-	ExistsExpiryFunc func(ctx context.Context, tx repository.Tx, subscriptionID string, thresholdDays int) (bool, error)
+	SaveFunc   func(ctx context.Context, tx repository.Tx, subscriptionID, userID, kind string, thresholdDays int) error
+	ExistsFunc func(ctx context.Context, tx repository.Tx, subscriptionID, kind string, thresholdDays int) (bool, error)
 }
 
 var _ repository.NotificationLogRepository = (*MockNotificationLogRepo)(nil)
 
 func NewMockNotificationLogRepo() *MockNotificationLogRepo {
 	return &MockNotificationLogRepo{
-		entries: make(map[string]map[int]struct{}),
+		entries: make(map[string]struct{}),
 	}
 }
 
-func (r *MockNotificationLogRepo) SaveExpiry(ctx context.Context, tx repository.Tx, subscriptionID, userID string, thresholdDays int) error {
-	if r.SaveExpiryFunc != nil {
-		return r.SaveExpiryFunc(ctx, tx, subscriptionID, userID, thresholdDays)
+// makeKey is a helper to create a consistent key for the in-memory map.
+func (r *MockNotificationLogRepo) makeKey(subscriptionID, kind string, thresholdDays int) string {
+	return fmt.Sprintf("%s:%s:%d", subscriptionID, kind, thresholdDays)
+}
+
+func (r *MockNotificationLogRepo) Save(ctx context.Context, tx repository.Tx, subscriptionID, userID, kind string, thresholdDays int) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, tx, subscriptionID, userID, kind, thresholdDays)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.entries[subscriptionID]; !ok {
-		r.entries[subscriptionID] = make(map[int]struct{})
-	}
-	r.entries[subscriptionID][thresholdDays] = struct{}{}
+	key := r.makeKey(subscriptionID, kind, thresholdDays)
+	r.entries[key] = struct{}{}
 	return nil
 }
 
-func (r *MockNotificationLogRepo) ExistsExpiry(ctx context.Context, tx repository.Tx, subscriptionID string, thresholdDays int) (bool, error) {
-	if r.ExistsExpiryFunc != nil {
-		return r.ExistsExpiryFunc(ctx, tx, subscriptionID, thresholdDays)
+func (r *MockNotificationLogRepo) Exists(ctx context.Context, tx repository.Tx, subscriptionID, kind string, thresholdDays int) (bool, error) {
+	if r.ExistsFunc != nil {
+		return r.ExistsFunc(ctx, tx, subscriptionID, kind, thresholdDays)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if days, ok := r.entries[subscriptionID]; ok {
-		_, exists := days[thresholdDays]
-		return exists, nil
+	key := r.makeKey(subscriptionID, kind, thresholdDays)
+	_, exists := r.entries[key]
+	return exists, nil
+}
+
+// ---- Mock RegistrationStateRepository ----
+
+// MockRegistrationStateRepo mocks the repository for registration state.
+type MockRegistrationStateRepo struct {
+	mu   sync.Mutex
+	data map[int64]*repository.RegistrationState
+
+	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.RegistrationState) error
+	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.RegistrationState, error)
+	ClearStateFunc func(ctx context.Context, tgID int64) error
+}
+
+var _ repository.RegistrationStateRepository = (*MockRegistrationStateRepo)(nil)
+
+func NewMockRegistrationStateRepo() *MockRegistrationStateRepo {
+	return &MockRegistrationStateRepo{data: make(map[int64]*repository.RegistrationState)}
+}
+
+func (m *MockRegistrationStateRepo) makeKey(subscriptionID, kind string, thresholdDays int) string {
+	return fmt.Sprintf("%s:%s:%d", subscriptionID, kind, thresholdDays)
+}
+
+func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.RegistrationState) error {
+	if m.SetStateFunc != nil {
+		return m.SetStateFunc(ctx, tgID, state)
 	}
-	return false, nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[tgID] = state
+	return nil
+}
+
+func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.RegistrationState, error) {
+	if m.GetStateFunc != nil {
+		return m.GetStateFunc(ctx, tgID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.data[tgID]; ok {
+		return state, nil
+	}
+	return nil, redis.Nil // Simulate key not found
+}
+
+func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) error {
+	if m.ClearStateFunc != nil {
+		return m.ClearStateFunc(ctx, tgID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, tgID)
+	return nil
 }
 
 // =============================
@@ -1182,4 +1245,31 @@ func (l *MockLocker) Unlock(ctx context.Context, key, token string) error {
 func newTestLogger() *zerolog.Logger {
 	logger := zerolog.New(io.Discard)
 	return &logger
+}
+
+// --- Mock Translator
+type mockTranslate struct {
+	translations map[string]string
+}
+
+func (t *mockTranslate) T(key string, args ...interface{}) string {
+	format, ok := t.translations[key]
+	if !ok {
+		return key
+	}
+	if len(args) > 0 {
+		return fmt.Sprintf(format, args...)
+	}
+	return format
+}
+
+func newTestTranslator() i18n.Translator {
+	// We create a mock translator from a simple YAML string
+	// to avoid file IO in tests.
+	yamlData := "reg_start: 'Welcome %s'"
+	var translations map[string]string
+	_ = yaml.Unmarshal([]byte(yamlData), &translations)
+
+	mT := mockTranslate{translations: translations}
+	return &mT
 }

@@ -15,7 +15,7 @@ import (
 var _ adapter.AIServiceAdapter = (*GeminiAdapter)(nil)
 
 // top-level (near other vars)
-const countTokensTimeout = 900 * time.Millisecond
+const countTokensTimeout = 10 * time.Second
 
 type GeminiAdapter struct {
 	client       *genai.Client
@@ -30,11 +30,13 @@ func NewGeminiAdapter(ctx context.Context, apiKey, baseUrl, defaultModel string,
 	if apiKey == "" {
 		return nil, errors.New("gemini: empty api key")
 	}
+	timeout := time.Duration(15*time.Second + countTokensTimeout)
 	c, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  apiKey,
 		Backend: genai.BackendGeminiAPI,
 		HTTPOptions: genai.HTTPOptions{
 			BaseURL: baseUrl,
+			Timeout: &timeout,
 		},
 	})
 	if err != nil {

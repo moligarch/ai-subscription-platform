@@ -7,10 +7,10 @@ import (
 )
 
 type RateLimiter struct {
-	client *Client
+	client *redClient
 }
 
-func NewRateLimiter(client *Client) *RateLimiter {
+func NewRateLimiter(client *redClient) *RateLimiter {
 	return &RateLimiter{client: client}
 }
 

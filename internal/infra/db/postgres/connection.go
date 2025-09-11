@@ -122,11 +122,8 @@ func pickRow(ctx context.Context, pool *pgxpool.Pool, tx repository.Tx, sql stri
 	if err != nil {
 		return nil, err
 	}
-	row := exec.QueryRow(ctx, sql, args...)
-	if row == nil {
-		return nil, domain.ErrNotFound
-	}
 
+	row := exec.QueryRow(ctx, sql, args...)
 	return row, nil
 }
 

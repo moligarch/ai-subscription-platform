@@ -96,7 +96,6 @@ func TestMain(m *testing.M) {
 	}
 	log.Println("Test database is ready.")
 
-	// --- THE FIX ---
 	// 4. Run Tests and capture the exit code
 	exitCode := m.Run()
 

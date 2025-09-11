@@ -20,6 +20,7 @@ import (
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
 	"telegram-ai-subscription/internal/infra/api"
 	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/i18n"
 	"telegram-ai-subscription/internal/infra/logging"
 	appmetrics "telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
@@ -33,8 +34,8 @@ import (
 )
 
 var (
-	Version = "dev"
-	Commit  = "none"
+	version = "dev"
+	commit  = "none"
 )
 
 func main() {
@@ -67,9 +68,15 @@ func main() {
 		logger.Info().Msg("[DEV MODE] Enabled")
 	}
 
+	// ---- Localization ----
+	translator, err := i18n.NewTranslator("fa")
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to load translations")
+	}
+
 	// ---- Metrics ----
 	appmetrics.MustRegister()
-	appmetrics.SetBuildInfo(Version, Commit)
+	appmetrics.SetBuildInfo(version, commit)
 
 	// ---- Redis ----
 	redisClient, err := red.NewClient(ctx, &cfg.Redis)
@@ -82,6 +89,7 @@ func main() {
 	rateLimiter := red.NewRateLimiter(redisClient)
 	chatCache := red.NewChatCache(redisClient, cfg.Redis.TTL)
 	locker := red.NewLocker(redisClient)
+	regStateRepo := red.NewRegistrationStateRepo(redisClient)
 
 	// ---- Postgres ----
 	pool, err := pg.TryConnect(ctx, cfg.Database.URL, int32(cfg.Database.PoolMaxConns), 30*time.Second)
@@ -118,13 +126,10 @@ func main() {
 	dbPriceRepo := pg.NewModelPricingRepo(pool)
 	priceRepo := pg.NewModelPricingRepoCacheDecorator(dbPriceRepo, redisClient)
 
-	aiJobRepo := pg.NewAIJobRepo(pool)
+	aiJobRepo := pg.NewAIJobRepo(pool, txManager)
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
-	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, txManager, logger)
-	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
-	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
+	notifLogRepo := pg.NewNotificationLogRepo(pool)
 
 	providers := map[string]adapter.AIServiceAdapter{}
 
@@ -162,6 +167,10 @@ func main() {
 	// composite used across the app
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
+	// ---- Use Cases ----
+	userUC := usecase.NewUserUseCase(userRepo, chatRepo, regStateRepo, translator, txManager, logger)
+	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
 	chatUC := usecase.NewChatUseCase(chatRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
 
 	// Payment gateway + use case
@@ -172,26 +181,17 @@ func main() {
 	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, txManager, logger)
 
 	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
-	notifUC := usecase.NewNotificationUseCase(subRepo, logger)
-	_ = notifUC // wired by schedulers/workers later
-
-	// Compute callback path from full URL in config (fallback to default)
-	cbPath := "/api/payment/callback"
-	if u := strings.TrimSpace(cfg.Payment.ZarinPal.CallbackURL); u != "" {
-		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
-			cbPath = parsed.Path
-		}
-	}
 
 	// Bot facade (used by telegram adapter)
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cfg.Payment.ZarinPal.CallbackURL)
 
 	// ---- Telegram ----
-	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, cfg.Bot.Workers, logger)
+	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, translator, rateLimiter, cfg.Bot.Workers, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("telegram adapter")
 	}
 	defer botAdapter.StopPolling() // ensure we stop cleanly on shutdown
+
 	if strings.ToLower(cfg.Bot.Mode) != "polling" {
 		logger.Warn().Str("mode", cfg.Bot.Mode).Msg("bot.mode not implemented; using polling")
 	}
@@ -200,6 +200,16 @@ func main() {
 			logger.Error().Err(err).Msg("telegram polling stopped")
 		}
 	}()
+
+	notifUC := usecase.NewNotificationUseCase(subRepo, notifLogRepo, userRepo, botAdapter, logger)
+
+	// Compute callback path from full URL in config (fallback to default)
+	cbPath := "/api/payment/callback"
+	if u := strings.TrimSpace(cfg.Payment.ZarinPal.CallbackURL); u != "" {
+		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
+			cbPath = parsed.Path
+		}
+	}
 
 	// ---- HTTP callback server with guards ----
 	srv := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
@@ -235,6 +245,10 @@ func main() {
 	appWorkerPool := worker.NewPool(cfg.Bot.Workers) // Use the same worker count as the bot
 	appWorkerPool.Start(ctx)
 	defer appWorkerPool.Stop()
+
+	// Notification worker: check for expiring subs every 6 hours
+	notificationWorker := sched.NewNotificationWorker(6*time.Hour, notifUC, logger)
+	go func() { _ = notificationWorker.Run(ctx) }()
 
 	aiProcessor := worker.NewAIJobProcessor(
 		aiJobRepo,

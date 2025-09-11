@@ -1,3 +1,4 @@
 config.yaml
 **/_bak/
 .env
+bin/

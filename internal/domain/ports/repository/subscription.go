@@ -20,12 +20,3 @@ type SubscriptionRepository interface {
 	TotalRemainingCredits(ctx context.Context, tx Tx) (int64, error)
 	CountByStatus(ctx context.Context, tx Tx) (map[model.SubscriptionStatus]int, error)
 }
-
-// -----------------------------
-// Notifications Log
-// -----------------------------
-
-type NotificationLogRepository interface {
-	SaveExpiry(ctx context.Context, tx Tx, subscriptionID, userID string, thresholdDays int) error
-	ExistsExpiry(ctx context.Context, tx Tx, subscriptionID string, thresholdDays int) (bool, error)
-}

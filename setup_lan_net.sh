@@ -1,63 +1,78 @@
 #!/bin/bash
 set -e
 
-# --- Configuration ---
-# The physical network interface your Docker network is attached to.
 PARENT_IFACE="ens160"
-
-# The name for the new virtual interface on your host.
 MACVLAN_IFACE="macvlan0"
+HOST_IP="192.168.10.250/32"
 
-# A STATIC IP for your host machine on the macvlan network.
-# IMPORTANT: This IP must be on the same subnet as your containers
-# but must NOT be used by any other device or container.
-HOST_IP="192.168.10.250/24"
-
-# The list of all container IPs defined in your docker-compose.yml file.
 CONTAINER_IPS=(
-  "192.168.10.210" # app
-  "192.168.10.211" # postgres
-  "192.168.10.212" # redis
-  "192.168.10.213" # prometheus
-  "192.168.10.214" # loki
-  "192.168.10.215" # grafana
+  "192.168.10.210"
+  "192.168.10.211"
+  "192.168.10.212"
+  "192.168.10.213"
+  "192.168.10.214"
+  "192.168.10.215"
 )
-# --- End Configuration ---
 
-# Function to set up the routes
 setup() {
   echo "--- Setting up macvlan bridge for host access ---"
-  
-  # 1. Create the virtual interface linked to the parent
-  echo "[1/4] Creating virtual interface ${MACVLAN_IFACE}..."
+
+  echo "[1/8] Removing existing ${MACVLAN_IFACE} if any..."
+  sudo ip link del ${MACVLAN_IFACE} 2>/dev/null || true
+
+  echo "[2/8] Creating virtual interface ${MACVLAN_IFACE}..."
   sudo ip link add ${MACVLAN_IFACE} link ${PARENT_IFACE} type macvlan mode bridge
 
-  # 2. Assign the static IP to the new virtual interface
-  echo "[2/4] Assigning IP ${HOST_IP} to ${MACVLAN_IFACE}..."
+  echo "[3/8] Assigning IP ${HOST_IP} to ${MACVLAN_IFACE}..."
+  sudo ip addr flush dev ${MACVLAN_IFACE} || true
   sudo ip addr add ${HOST_IP} dev ${MACVLAN_IFACE}
 
-  # 3. Bring the new interface up
-  echo "[3/4] Activating interface ${MACVLAN_IFACE}..."
+  echo "[4/8] Activating interface ${MACVLAN_IFACE}..."
   sudo ip link set ${MACVLAN_IFACE} up
 
-  # 4. Add specific routes for each container via the new interface
-  echo "[4/4] Adding routes for containers..."
+  echo "[5/8] Adding route for subnet 192.168.10.0/24 via ${PARENT_IFACE}..."
+  sudo ip route replace 192.168.10.0/24 dev ${PARENT_IFACE}
+
+  echo "[6/8] Adding routes for containers via ${MACVLAN_IFACE}..."
   for ip in "${CONTAINER_IPS[@]}"; do
-    echo "      -> Routing ${ip} via ${MACVLAN_IFACE}"
+    echo "     -> Routing ${ip} via ${MACVLAN_IFACE}"
     sudo ip route replace ${ip}/32 dev ${MACVLAN_IFACE}
   done
 
-  echo "--- Setup complete. Host can now reach containers. ---"
+  echo "[7/8] Waiting for default route via ${MACVLAN_IFACE} to appear (timeout 15s)..."
+  WAIT_TIME=15
+  PASSED=0
+  while [ $PASSED -lt $WAIT_TIME ]; do
+    if ip route show default dev ${MACVLAN_IFACE} > /dev/null 2>&1; then
+      echo "     -> Default route found. Removing..."
+      if sudo ip route del default dev ${MACVLAN_IFACE}; then
+        echo "     -> Default route removed."
+        break
+      else
+        echo "     -> Failed to remove default route, retrying..."
+      fi
+    else
+      echo "     -> Default route not found yet. Waiting..."
+    fi
+    sleep 1
+    PASSED=$((PASSED + 1))
+  done
+
+  if ip route show default dev ${MACVLAN_IFACE} > /dev/null 2>&1; then
+    echo "Warning: default route via ${MACVLAN_IFACE} still exists after timeout."
+  else
+    echo "No default route via ${MACVLAN_IFACE} exists anymore."
+  fi
+
+  echo "[8/8] Setup complete."
 }
 
-# Function to tear down the routes
 teardown() {
   echo "--- Tearing down macvlan bridge ---"
   sudo ip link del ${MACVLAN_IFACE} 2>/dev/null || echo "Interface ${MACVLAN_IFACE} already removed."
   echo "--- Teardown complete. ---"
 }
 
-# Main script logic
 case "$1" in
   up)
     setup

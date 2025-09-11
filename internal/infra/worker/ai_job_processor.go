@@ -171,7 +171,7 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 			Tokens:    usage.CompletionTokens,
 			Timestamp: time.Now(),
 		}
-		if err := p.chatRepo.SaveMessage(ctx, tx, &aiMsg); err != nil {
+		if _, err := p.chatRepo.SaveMessage(ctx, tx, &aiMsg); err != nil {
 			return err
 		}
 
@@ -189,7 +189,10 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 			return nil // Don't fail the transaction, just log the error
 		}
 
-		if err := p.botAdapter.SendMessage(ctx, user.TelegramID, reply); err != nil {
+		if err := p.botAdapter.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: user.TelegramID,
+			Text:   reply,
+		}); err != nil {
 			p.log.Error().Err(err).Int64("tg_id", user.TelegramID).Msg("Failed to send final AI reply via Telegram")
 			// Don't fail the transaction for this, just log it.
 		}

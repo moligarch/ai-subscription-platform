@@ -17,10 +17,14 @@ var _ repository.AIJobRepository = (*aiJobRepo)(nil)
 
 type aiJobRepo struct {
 	pool *pgxpool.Pool
+	tm   repository.TransactionManager
 }
 
-func NewAIJobRepo(pool *pgxpool.Pool) *aiJobRepo {
-	return &aiJobRepo{pool: pool}
+func NewAIJobRepo(pool *pgxpool.Pool, tm repository.TransactionManager) *aiJobRepo {
+	return &aiJobRepo{
+		pool: pool,
+		tm:   tm,
+	}
 }
 
 func (r *aiJobRepo) Save(ctx context.Context, tx repository.Tx, job *model.AIJob) error {
@@ -44,18 +48,11 @@ ON CONFLICT (id) DO UPDATE SET
 }
 
 func (r *aiJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJob, error) {
-	var job model.AIJob
-	// This transaction ensures the SELECT and UPDATE are atomic.
-	// `FOR UPDATE SKIP LOCKED` is a powerful Postgres feature that tells the query
-	// to lock the row it finds, and if it's already locked by another worker,
-	// just skip it and find the next unlocked one. This is perfect for a work queue.
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
+	var job *model.AIJob
 
-	const fetchQuery = `
+	// Use the TransactionManager to handle Begin/Commit/Rollback automatically.
+	err := r.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		const fetchQuery = `
 SELECT id, status, session_id, user_message_id, retries, last_error, created_at, updated_at
 FROM ai_jobs
 WHERE status = 'pending'
@@ -63,30 +60,46 @@ ORDER BY created_at
 LIMIT 1
 FOR UPDATE SKIP LOCKED;`
 
-	row := tx.QueryRow(ctx, fetchQuery)
-	var statusStr string
-	err = row.Scan(
-		&job.ID, &statusStr, &job.SessionID, &job.UserMessageID, &job.Retries, &job.LastError, &job.CreatedAt, &job.UpdatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrNotFound // No pending jobs, which is not an error.
+		// We can now use our pickRow helper inside the transaction
+		row, err := pickRow(ctx, r.pool, tx, fetchQuery)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return domain.ErrNotFound // Return the specific error to stop the transaction wrapper
+			}
+			return err
 		}
-		return nil, err
+
+		var fetchedJob model.AIJob
+		var statusStr string
+		err = row.Scan(
+			&fetchedJob.ID, &statusStr, &fetchedJob.SessionID, &fetchedJob.UserMessageID,
+			&fetchedJob.Retries, &fetchedJob.LastError, &fetchedJob.CreatedAt, &fetchedJob.UpdatedAt,
+		)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return domain.ErrNotFound // Translate driver error to our domain error
+			}
+			return domain.ErrReadDatabaseRow // For all other scan errors
+		}
+		fetchedJob.Status = model.AIJobStatus(statusStr)
+
+		// Mark the job as processing so no one else picks it up
+		fetchedJob.Status = model.AIJobStatusProcessing
+		fetchedJob.UpdatedAt = time.Now()
+
+		// The existing Save method will correctly use the transaction context (tx)
+		if err := r.Save(ctx, tx, &fetchedJob); err != nil {
+			return err
+		}
+
+		job = &fetchedJob // Assign the result to the outer scope variable
+		return nil
+	})
+
+	// Handle the specific case where no rows were found
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil, domain.ErrNotFound
 	}
-	job.Status = model.AIJobStatus(statusStr)
 
-	// Mark the job as processing so no one else picks it up
-	job.Status = model.AIJobStatusProcessing
-	job.UpdatedAt = time.Now()
-
-	if err := r.Save(ctx, tx, &job); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	return &job, nil
+	return job, err
 }

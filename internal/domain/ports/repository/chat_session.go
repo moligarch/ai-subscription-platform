@@ -11,7 +11,7 @@ import (
 
 type ChatSessionRepository interface {
 	Save(ctx context.Context, tx Tx, session *model.ChatSession) error
-	SaveMessage(ctx context.Context, tx Tx, message *model.ChatMessage) error
+	SaveMessage(ctx context.Context, tx Tx, message *model.ChatMessage) (wasSaved bool, err error)
 	Delete(ctx context.Context, tx Tx, id string) error
 	FindActiveByUser(ctx context.Context, tx Tx, userID string) (*model.ChatSession, error)
 	ListByUser(ctx context.Context, tx Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
@@ -19,4 +19,5 @@ type ChatSessionRepository interface {
 	UpdateStatus(ctx context.Context, tx Tx, sessionID string, status model.ChatSessionStatus) error
 	FindUserBySessionID(ctx context.Context, tx Tx, sessionID string) (*model.User, error)
 	CleanupOldMessages(ctx context.Context, userID string, retentionDays int) (int64, error)
+	DeleteAllByUserID(ctx context.Context, tx Tx, userID string) error
 }

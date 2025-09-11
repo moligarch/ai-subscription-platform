@@ -53,16 +53,16 @@ ON CONFLICT (id) DO UPDATE SET
 	}
 }
 
-func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error {
+func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) (bool, error) {
 	// Resolve user_id from session (so model.ChatMessage doesn't need UserID field)
 	const qUserFromSess = `SELECT user_id FROM chat_sessions WHERE id=$1;`
 	var userID string
 	row, err := pickRow(ctx, r.pool, tx, qUserFromSess, m.SessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := row.Scan(&userID); err != nil {
-		return domain.ErrReadDatabaseRow
+		return false, domain.ErrReadDatabaseRow
 	}
 
 	// read user privacy from users table
@@ -72,19 +72,19 @@ func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *
 	if err != nil {
 		switch err {
 		case pgx.ErrNoRows:
-			return domain.ErrNotFound
+			return false, domain.ErrNotFound
 		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
-			return err
+			return false, err
 		default:
-			return domain.ErrOperationFailed
+			return false, domain.ErrOperationFailed
 		}
 	}
 	if err := rows.Scan(&dataEncrypted, &allowStore); err != nil {
-		return domain.ErrReadDatabaseRow
+		return false, domain.ErrReadDatabaseRow
 	}
 
 	if !allowStore {
-		return nil // do not store messages at all
+		return false, nil // do not store messages at all
 	}
 
 	payload := m.Content
@@ -92,7 +92,7 @@ func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *
 	if dataEncrypted {
 		payload, err = r.encryptionSvc.Encrypt(m.Content)
 		if err != nil {
-			return domain.ErrEncryptionFailed
+			return false, domain.ErrEncryptionFailed
 		}
 		encFlag = true
 	}
@@ -102,14 +102,16 @@ INSERT INTO chat_messages (id, session_id, role, content, tokens, encrypted, cre
 VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,NOW()));`
 
 	_, err = execSQL(ctx, r.pool, tx, q, m.ID, m.SessionID, m.Role, payload, m.Tokens, encFlag, m.Timestamp)
-	switch err {
-	case nil:
-		return nil
-	case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
-		return err
-	default:
-		return domain.ErrOperationFailed
+	if err != nil {
+		switch err {
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
+			return false, err
+		default:
+			return false, domain.ErrOperationFailed
+		}
 	}
+	return true, nil
+
 }
 
 func (r *chatSessionRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
@@ -144,19 +146,19 @@ func (r *chatSessionRepo) ListByUser(ctx context.Context, tx repository.Tx, user
 		offset = 0
 	}
 
-	q := `
+	var q = `
 SELECT s.id, s.user_id, s.model, s.status, s.created_at, s.updated_at,
-       fm.role, fm.content, fm.tokens, fm.created_at
+       fm.role, fm.content, fm.tokens, fm.created_at, fm.encrypted
 FROM chat_sessions s
 LEFT JOIN LATERAL (
-    SELECT role, content, tokens, created_at
+    SELECT role, content, tokens, created_at, encrypted
     FROM chat_messages
     WHERE session_id = s.id
     ORDER BY created_at ASC
     LIMIT 1
 ) fm ON TRUE
 WHERE s.user_id = $1
-ORDER BY s.created_at DESC
+ORDER BY s.updated_at DESC
 OFFSET $2
 `
 	var rows pgx.Rows
@@ -186,23 +188,29 @@ OFFSET $2
 		var firstRole, firstContent sql.NullString
 		var firstTokens sql.NullInt32
 		var firstCreated sql.NullTime
+		var isEncrypted sql.NullBool
 
 		if err := rows.Scan(
 			&s.ID, &s.UserID, &s.Model, &s.Status, &s.CreatedAt, &s.UpdatedAt,
-			&firstRole, &firstContent, &firstTokens, &firstCreated,
+			&firstRole, &firstContent, &firstTokens, &firstCreated, &isEncrypted,
 		); err != nil {
 			return nil, domain.ErrReadDatabaseRow
 		}
-		plain, err := r.encryptionSvc.Decrypt(firstContent.String)
-		if err != nil {
-			return nil, domain.ErrDecryptionFailed
-		}
-
 		if firstRole.Valid && firstContent.Valid {
+			content := firstContent.String
+			// Only decrypt if the encrypted flag is true.
+			if isEncrypted.Valid && isEncrypted.Bool {
+				plain, err := r.encryptionSvc.Decrypt(firstContent.String)
+				if err != nil {
+					return nil, domain.ErrDecryptionFailed
+				}
+				content = plain
+			}
+
 			s.Messages = append(s.Messages, model.ChatMessage{
 				SessionID: s.ID,
 				Role:      firstRole.String,
-				Content:   plain,
+				Content:   content,
 				Tokens:    int(firstTokens.Int32),
 				Timestamp: firstCreated.Time,
 			})
@@ -321,4 +329,11 @@ DELETE FROM chat_messages
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+func (r *chatSessionRepo) DeleteAllByUserID(ctx context.Context, tx repository.Tx, userID string) error {
+	const q = `DELETE FROM chat_sessions WHERE user_id = $1;`
+	_, err := execSQL(ctx, r.pool, tx, q, userID)
+	// The ON DELETE CASCADE constraint on chat_messages will handle deleting the messages.
+	return err
 }

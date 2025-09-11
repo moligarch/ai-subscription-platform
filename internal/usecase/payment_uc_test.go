@@ -1,3 +1,5 @@
+//go:build !integration
+
 package usecase_test
 
 import (
@@ -186,6 +188,25 @@ func TestPaymentUseCase_ConfirmAuto(t *testing.T) {
 		}
 		if !errors.Is(err, expectedErr) {
 			t.Errorf("expected error to wrap gateway failure, but it didn't")
+		}
+	})
+
+	t.Run("should sum revenue by period", func(t *testing.T) {
+		deps := newPaymentUCDeps()
+		deps.payments.SumByPeriodFunc = func(ctx context.Context, tx repository.Tx, period string) (int64, error) {
+			if period == "month" {
+				return 100000, nil
+			}
+			return 0, nil
+		}
+		uc := usecase.NewPaymentUseCase(deps.payments, deps.plans, deps.subUC, deps.purchases, deps.gateway, deps.tm, testLogger)
+
+		revenue, err := uc.SumByPeriod(ctx, nil, "month")
+		if err != nil {
+			t.Fatalf("SumByPeriod failed: %v", err)
+		}
+		if revenue != 100000 {
+			t.Errorf("expected revenue to be 100000, got %d", revenue)
 		}
 	})
 }
