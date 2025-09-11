@@ -16,13 +16,15 @@ import (
 func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 	ctx := context.Background()
 	testLogger := newTestLogger()
+	testTranslator := newTestTranslator()
+	mockTxManager := NewMockTxManager()
 
 	t.Run("should fetch existing user and update last active time", func(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
-		mockTxManager := NewMockTxManager()
 		mockChatRepo := NewMockChatSessionRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockTxManager, testLogger)
+		mockRegStateRepo := NewMockRegistrationStateRepo()
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		// Create the initial state
 		originalUser := &model.User{
@@ -63,9 +65,9 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 	t.Run("should register a new user if not found", func(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
-		mockTxManager := NewMockTxManager()
 		mockChatRepo := NewMockChatSessionRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockTxManager, testLogger)
+		mockRegStateRepo := NewMockRegistrationStateRepo()
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		const newTelegramID = 54321
 		const newUsername = "new_user"
@@ -90,7 +92,6 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 	t.Run("should propagate error on repository failure", func(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
-		mockTxManager := NewMockTxManager()
 		expectedErr := errors.New("database is down")
 
 		// For this specific case, overriding with a custom function is correct.
@@ -98,7 +99,8 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 			return nil, expectedErr
 		}
 		mockChatRepo := NewMockChatSessionRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockTxManager, testLogger)
+		mockRegStateRepo := NewMockRegistrationStateRepo()
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		// --- Act ---
 		_, err := uc.RegisterOrFetch(ctx, 12345, "any_user")
@@ -117,7 +119,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		mockUserRepo.CountUsersFunc = func(ctx context.Context, tx repository.Tx) (int, error) {
 			return 99, nil
 		}
-		uc := usecase.NewUserUseCase(mockUserRepo, nil, nil, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, nil, nil, nil, nil, testLogger)
 
 		count, err := uc.Count(ctx)
 		if err != nil {
@@ -132,14 +134,15 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 func TestUserUseCase_ToggleMessageStorage(t *testing.T) {
 	ctx := context.Background()
 	testLogger := newTestLogger()
+	testTranslator := newTestTranslator()
 	mockTxManager := NewMockTxManager()
 
 	t.Run("should disable storage and delete history", func(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
+		mockRegStateRepo := NewMockRegistrationStateRepo()
 
-		// User starts with storage enabled
 		user := &model.User{ID: "user-1", TelegramID: 123, Privacy: model.PrivacySettings{AllowMessageStorage: true}}
 		mockUserRepo.FindByTelegramIDFunc = func(ctx context.Context, tx repository.Tx, tgID int64) (*model.User, error) {
 			return user, nil
@@ -157,7 +160,8 @@ func TestUserUseCase_ToggleMessageStorage(t *testing.T) {
 			return nil
 		}
 
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockTxManager, testLogger)
+		// Pass the new mock to the constructor
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		// --- Act ---
 		err := uc.ToggleMessageStorage(ctx, 123)
@@ -174,6 +178,38 @@ func TestUserUseCase_ToggleMessageStorage(t *testing.T) {
 		}
 		if !historyDeleted {
 			t.Error("expected user chat history to be deleted")
+		}
+	})
+}
+
+func TestUserUseCase_Counting(t *testing.T) {
+	ctx := context.Background()
+	testLogger := newTestLogger()
+	testTranslator := newTestTranslator()
+	mockTxManager := NewMockTxManager()
+
+	t.Run("CountInactiveSince should call the repository and return the count", func(t *testing.T) {
+		// --- Arrange ---
+		mockUserRepo := NewMockUserRepo()
+		mockChatRepo := NewMockChatSessionRepo()
+		mockRegStateRepo := NewMockRegistrationStateRepo()
+
+		// Configure the mock to return a specific count
+		mockUserRepo.CountInactiveUsersFunc = func(ctx context.Context, tx repository.Tx, olderThan time.Time) (int, error) {
+			return 42, nil
+		}
+
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+
+		// --- Act ---
+		count, err := uc.CountInactiveSince(ctx, time.Now())
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got: %v", err)
+		}
+		if count != 42 {
+			t.Errorf("expected count of inactive users to be 42, but got %d", count)
 		}
 	})
 }

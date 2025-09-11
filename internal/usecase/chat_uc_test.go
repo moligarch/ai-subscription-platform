@@ -184,35 +184,6 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 	})
 }
 
-func TestChatUseCase_EndChat(t *testing.T) {
-	ctx := context.Background()
-	uc, mockChatRepo, _ := setupChatUCTest()
-
-	t.Run("should end an active chat session", func(t *testing.T) {
-		// Arrange
-		session := &model.ChatSession{ID: "sess-1", Status: model.ChatSessionActive}
-		mockChatRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error) {
-			return session, nil
-		}
-		var updatedStatus model.ChatSessionStatus
-		mockChatRepo.UpdateStatusFunc = func(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
-			updatedStatus = status
-			return nil
-		}
-
-		// Act
-		err := uc.EndChat(ctx, "sess-1")
-
-		// Assert
-		if err != nil {
-			t.Fatalf("expected no error, but got %v", err)
-		}
-		if updatedStatus != model.ChatSessionFinished {
-			t.Errorf("expected session status to be updated to 'finished', but got '%s'", updatedStatus)
-		}
-	})
-}
-
 func TestChatUseCase_ListHistory(t *testing.T) {
 	ctx := context.Background()
 	uc, mockChatRepo, _ := setupChatUCTest()
@@ -243,18 +214,105 @@ func TestChatUseCase_ListHistory(t *testing.T) {
 	})
 }
 
+func TestChatUseCase_EndChat(t *testing.T) {
+	ctx := context.Background()
+	uc, mockChatRepo, _ := setupChatUCTest()
+
+	t.Run("should end an active chat session", func(t *testing.T) {
+		// Arrange
+		session := &model.ChatSession{ID: "sess-1", Status: model.ChatSessionActive}
+		mockChatRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error) {
+			return session, nil
+		}
+		var updatedStatus model.ChatSessionStatus
+		mockChatRepo.UpdateStatusFunc = func(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
+			updatedStatus = status
+			return nil
+		}
+
+		// Act
+		err := uc.EndChat(ctx, "sess-1")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if updatedStatus != model.ChatSessionFinished {
+			t.Errorf("expected session status to be updated to 'finished', but got '%s'", updatedStatus)
+		}
+	})
+}
+
+func TestChatUseCase_SessionManagement(t *testing.T) {
+	ctx := context.Background()
+	uc, mockChatRepo, _ := setupChatUCTest()
+
+	t.Run("SwitchActiveSession should update statuses correctly", func(t *testing.T) {
+		// Arrange
+		activeSession := &model.ChatSession{ID: "sess-active", Status: model.ChatSessionActive}
+		mockChatRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error) {
+			return activeSession, nil
+		}
+
+		var updatedStatuses []model.ChatSessionStatus
+		mockChatRepo.UpdateStatusFunc = func(ctx context.Context, tx repository.Tx, sessionID string, status model.ChatSessionStatus) error {
+			updatedStatuses = append(updatedStatuses, status)
+			return nil
+		}
+
+		// Act
+		err := uc.SwitchActiveSession(ctx, "user-1", "sess-new")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if len(updatedStatuses) != 2 {
+			t.Fatalf("expected two status updates, but got %d", len(updatedStatuses))
+		}
+		if updatedStatuses[0] != model.ChatSessionFinished {
+			t.Error("expected old session to be marked 'finished'")
+		}
+		if updatedStatuses[1] != model.ChatSessionActive {
+			t.Error("expected new session to be marked 'active'")
+		}
+	})
+
+	t.Run("DeleteSession should call repository delete", func(t *testing.T) {
+		// Arrange
+		deleteCalledWithID := ""
+		mockChatRepo.DeleteFunc = func(ctx context.Context, tx repository.Tx, id string) error {
+			deleteCalledWithID = id
+			return nil
+		}
+
+		// Act
+		err := uc.DeleteSession(ctx, "sess-to-delete")
+
+		// Assert
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if deleteCalledWithID != "sess-to-delete" {
+			t.Error("repository Delete was not called with the correct session ID")
+		}
+	})
+}
+
 // Helper function to reduce boilerplate in chat_uc_test.go
 func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRepo) {
 	mockChatRepo := NewMockChatSessionRepo()
 	mockAIJobRepo := NewMockAIJobRepo()
 	mockPricingRepo := NewMockModelPricingRepo()
-	mockSubscriptionRepo := NewMockSubscriptionRepo()
-	mockPlanRepo := NewMockPlanRepo()
-	mockLocker := NewMockLocker()
+	mockSubRepo := NewMockSubscriptionRepo() // For the real SubscriptionUseCase
+	mockPlanRepo := NewMockPlanRepo()        // For the real SubscriptionUseCase
 	mockTxManager := NewMockTxManager()
 	testLogger := newTestLogger()
-	subUC := usecase.NewSubscriptionUseCase(mockSubscriptionRepo, mockPlanRepo, mockTxManager, testLogger)
 
-	uc := usecase.NewChatUseCase(mockChatRepo, mockAIJobRepo, nil, subUC, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+	// Construct a real SubscriptionUseCase with its own mocks
+	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+
+	// Construct the ChatUseCase with its mocks
+	uc := usecase.NewChatUseCase(mockChatRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false, mockPricingRepo)
 	return uc, mockChatRepo, mockAIJobRepo
 }
