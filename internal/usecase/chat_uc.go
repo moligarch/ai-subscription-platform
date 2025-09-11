@@ -68,7 +68,7 @@ func NewChatUseCase(
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
-		defer logging.TraceDuration(c.log, "ChatUC.StartChat")()
+	defer logging.TraceDuration(c.log, "ChatUC.StartChat")()
 
 	if _, err := c.prices.GetByModelName(ctx, nil, modelName); err != nil {
 		if errors.Is(err, domain.ErrNotFound) {

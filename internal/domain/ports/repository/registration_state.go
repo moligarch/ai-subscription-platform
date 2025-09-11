@@ -8,14 +8,14 @@ import (
 type RegistrationStep string
 
 const (
-	StateAwaitingFullName      RegistrationStep = "awaiting_fullname"
-	StateAwaitingPhone         RegistrationStep = "awaiting_phone"
-	StateAwaitingVerification  RegistrationStep = "awaiting_verification"
+	StateAwaitingFullName     RegistrationStep = "awaiting_fullname"
+	StateAwaitingPhone        RegistrationStep = "awaiting_phone"
+	StateAwaitingVerification RegistrationStep = "awaiting_verification"
 )
 
 // RegistrationState holds the user's current progress.
 type RegistrationState struct {
-	Step RegistrationStep    `json:"step"`
+	Step RegistrationStep  `json:"step"`
 	Data map[string]string `json:"data"` // To store collected info like full_name
 }
 
