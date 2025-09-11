@@ -10,6 +10,8 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
+
+	"github.com/google/uuid"
 )
 
 func TestPlanUseCase(t *testing.T) {
@@ -59,7 +61,7 @@ func TestPlanUseCase(t *testing.T) {
 
 		// Seed the repo with an existing plan
 		existingPlan := &model.SubscriptionPlan{
-			ID:           "plan-123",
+			ID:           uuid.NewString(),
 			Name:         "Old Name",
 			DurationDays: 30,
 		}
@@ -77,7 +79,7 @@ func TestPlanUseCase(t *testing.T) {
 			t.Fatalf("expected no error, but got: %v", err)
 		}
 
-		updatedPlan, _ := mockPlanRepo.FindByID(ctx, nil, "plan-123")
+		updatedPlan, _ := mockPlanRepo.FindByID(ctx, nil, existingPlan.ID)
 		if updatedPlan.Name != "New Name" {
 			t.Errorf("expected plan name to be updated to 'New Name', but got '%s'", updatedPlan.Name)
 		}
@@ -92,12 +94,12 @@ func TestPlanUseCase(t *testing.T) {
 			mockPlanRepo := NewMockPlanRepo()
 			mockPricingRepo := NewMockModelPricingRepo()
 			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
-
-			planToDelete := &model.SubscriptionPlan{ID: "plan-to-delete"}
+			idToDelete := uuid.NewString()
+			planToDelete := &model.SubscriptionPlan{ID: idToDelete}
 			mockPlanRepo.Save(ctx, nil, planToDelete)
 
 			// --- Act ---
-			err := uc.Delete(ctx, "plan-to-delete")
+			err := uc.Delete(ctx, idToDelete)
 
 			// --- Assert ---
 			if err != nil {
@@ -122,7 +124,7 @@ func TestPlanUseCase(t *testing.T) {
 			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
 			// --- Act ---
-			err := uc.Delete(ctx, "plan-in-use")
+			err := uc.Delete(ctx, uuid.NewString())
 
 			// --- Assert ---
 			if err == nil {
@@ -140,20 +142,23 @@ func TestPlanUseCase(t *testing.T) {
 		mockPricingRepo := NewMockModelPricingRepo()
 		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
 
-		plan1 := &model.SubscriptionPlan{ID: "plan-1", PriceIRR: 100}
-		plan2 := &model.SubscriptionPlan{ID: "plan-2", PriceIRR: 200}
+		id1 := uuid.NewString()
+		id2 := uuid.NewString()
+		// Seed the repo with some plans
+		plan1 := &model.SubscriptionPlan{ID: id1, PriceIRR: 100}
+		plan2 := &model.SubscriptionPlan{ID: id2, PriceIRR: 200}
 		mockPlanRepo.Save(ctx, nil, plan1)
 		mockPlanRepo.Save(ctx, nil, plan2)
 
 		// --- Act ---
-		singlePlan, errGet := uc.Get(ctx, "plan-1")
+		singlePlan, errGet := uc.Get(ctx, id1)
 		allPlans, errList := uc.List(ctx)
 
 		// --- Assert ---
 		if errGet != nil {
 			t.Fatalf("Get failed: %v", errGet)
 		}
-		if singlePlan == nil || singlePlan.ID != "plan-1" {
+		if singlePlan == nil || singlePlan.ID != id1 {
 			t.Errorf("Get did not retrieve the correct plan")
 		}
 

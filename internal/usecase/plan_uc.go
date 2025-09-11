@@ -3,9 +3,11 @@ package usecase
 import (
 	"context"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -49,6 +51,9 @@ func (p *planUC) Create(ctx context.Context, name string, durationDays int, cred
 }
 
 func (p *planUC) Update(ctx context.Context, plan *model.SubscriptionPlan) error {
+	if _, err := uuid.Parse(plan.ID); err != nil {
+		return domain.ErrInvalidArgument
+	}
 	return p.plans.Save(ctx, repository.NoTX, plan)
 }
 
@@ -57,10 +62,17 @@ func (p *planUC) List(ctx context.Context) ([]*model.SubscriptionPlan, error) {
 }
 
 func (p *planUC) Get(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, domain.ErrInvalidArgument // Return a specific error for invalid format
+	}
 	return p.plans.FindByID(ctx, repository.NoTX, id)
 }
 
 func (p *planUC) Delete(ctx context.Context, id string) error {
+	// First, validate that the provided ID is a valid UUID.
+	if _, err := uuid.Parse(id); err != nil {
+		return domain.ErrInvalidArgument // Return a specific error for invalid format
+	}
 	return p.plans.Delete(ctx, repository.NoTX, id)
 }
 
