@@ -4,8 +4,8 @@ package postgres
 
 import (
 	"context"
-	"testing"
 	"telegram-ai-subscription/internal/domain/model"
+	"testing"
 	"time"
 )
 
@@ -16,7 +16,7 @@ func TestUserRepo_Integration(t *testing.T) {
 
 	repo := NewUserRepo(testPool)
 	ctx := context.Background()
-	
+
 	t.Run("should perform full CRUD cycle", func(t *testing.T) {
 		cleanup(t)
 
@@ -69,8 +69,8 @@ func TestUserRepo_Integration(t *testing.T) {
 		user1, _ := model.NewUser("", 111, "user1")
 		user2, _ := model.NewUser("", 222, "user2")
 		user1.LastActiveAt = time.Now().Add(-48 * time.Hour) // Inactive
-		user2.LastActiveAt = time.Now()                     // Active
-		
+		user2.LastActiveAt = time.Now()                      // Active
+
 		if err := repo.Save(ctx, nil, user1); err != nil {
 			t.Fatalf("Save user1 failed: %v", err)
 		}

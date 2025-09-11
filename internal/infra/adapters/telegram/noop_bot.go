@@ -45,3 +45,9 @@ func (b *NoopBotAdapter) SendButtons(ctx context.Context, tgID int64, text strin
 	log.Printf("[noop-telegram] To user %d: %s [buttons: %v]\n", tgID, text, rows)
 	return nil
 }
+
+// SetMenuCommands is a no-op that logs the call details.
+func (b *NoopBotAdapter) SetMenuCommands(ctx context.Context, chatID int64, isAdmin bool) error {
+	log.Printf("[noop-telegram] SetMenuCommands called for chatID %d, isAdmin: %t", chatID, isAdmin)
+	return nil
+}

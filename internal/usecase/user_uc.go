@@ -23,19 +23,22 @@ type UserUseCase interface {
 	GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error)
 	Count(ctx context.Context) (int, error)
 	CountInactiveSince(ctx context.Context, since time.Time) (int, error)
+	ToggleMessageStorage(ctx context.Context, tgID int64) error
 }
 
 type userUC struct {
-	users repository.UserRepository
-	tm    repository.TransactionManager
-	log   *zerolog.Logger
+	users    repository.UserRepository
+	sessions repository.ChatSessionRepository
+	tm       repository.TransactionManager
+	log      *zerolog.Logger
 }
 
-func NewUserUseCase(users repository.UserRepository, tm repository.TransactionManager, logger *zerolog.Logger) *userUC {
+func NewUserUseCase(users repository.UserRepository, sessions repository.ChatSessionRepository, tm repository.TransactionManager, logger *zerolog.Logger) *userUC {
 	return &userUC{
-		users: users,
-		tm:    tm,
-		log:   logger,
+		users:    users,
+		sessions: sessions,
+		tm:       tm,
+		log:      logger,
 	}
 }
 
@@ -101,4 +104,32 @@ func (u *userUC) Count(ctx context.Context) (int, error) {
 func (u *userUC) CountInactiveSince(ctx context.Context, since time.Time) (int, error) {
 	defer logging.TraceDuration(u.log, "UserUC.CountInactiveSince")()
 	return u.users.CountInactiveUsers(ctx, repository.NoTX, since)
+}
+
+func (u *userUC) ToggleMessageStorage(ctx context.Context, tgID int64) error {
+	return u.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		user, err := u.users.FindByTelegramID(ctx, tx, tgID)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			return domain.ErrNotFound
+		}
+
+		// Toggle the setting
+		user.Privacy.AllowMessageStorage = !user.Privacy.AllowMessageStorage
+		if err := u.users.Save(ctx, tx, user); err != nil {
+			return err
+		}
+
+		// If storage was just disabled, delete all their chat history.
+		if !user.Privacy.AllowMessageStorage {
+			if err := u.sessions.DeleteAllByUserID(ctx, tx, user.ID); err != nil {
+				// Log the error but don't fail the whole transaction,
+				// as the primary goal (updating the setting) succeeded.
+				u.log.Error().Err(err).Str("user_id", user.ID).Msg("failed to delete user chat history after disabling storage")
+			}
+		}
+		return nil
+	})
 }

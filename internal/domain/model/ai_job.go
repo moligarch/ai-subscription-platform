@@ -15,7 +15,7 @@ type AIJob struct {
 	ID            string
 	Status        AIJobStatus
 	SessionID     string
-	UserMessageID string
+	UserMessageID *string
 	Retries       int
 	LastError     string
 	CreatedAt     time.Time

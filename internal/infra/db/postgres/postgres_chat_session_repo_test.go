@@ -44,10 +44,10 @@ func TestChatSessionRepo_Integration(t *testing.T) {
 		// Save messages to the session
 		msg1 := &model.ChatMessage{ID: uuid.NewString(), SessionID: session.ID, Role: "user", Content: "Hello World"}
 		msg2 := &model.ChatMessage{ID: uuid.NewString(), SessionID: session.ID, Role: "assistant", Content: "Hello User"}
-		if err := repo.SaveMessage(ctx, nil, msg1); err != nil {
+		if _, err := repo.SaveMessage(ctx, nil, msg1); err != nil {
 			t.Fatalf("failed to save message 1: %v", err)
 		}
-		if err := repo.SaveMessage(ctx, nil, msg2); err != nil {
+		if _, err := repo.SaveMessage(ctx, nil, msg2); err != nil {
 			t.Fatalf("failed to save message 2: %v", err)
 		}
 
@@ -124,14 +124,62 @@ func TestChatSessionRepo_Integration(t *testing.T) {
 			t.Error("expected session to be deleted, but it was found")
 		}
 
-		// Verify its messages are also gone (due to ON DELETE CASCADE)
 		var messageCount int
-		err = testPool.QueryRow(ctx, "SELECT COUNT(*) FROM chat_messages WHERE session_id = $1", session.ID).Scan(&messageCount)
+		row, err := pickRow(ctx, testPool, nil, "SELECT COUNT(*) FROM chat_messages WHERE session_id = $1", session.ID)
 		if err != nil {
-			t.Fatalf("failed to count messages: %v", err)
+			t.Fatalf("pickRow failed to count messages: %v", err)
 		}
+		if err := row.Scan(&messageCount); err != nil {
+			t.Fatalf("failed to scan message count: %v", err)
+		}
+
 		if messageCount != 0 {
 			t.Errorf("expected messages to be cascade deleted, but %d were found", messageCount)
+		}
+	})
+
+	t.Run("should delete all sessions and messages for a user", func(t *testing.T) {
+		cleanup(t)
+		user2, _ := model.NewUser("", 222, "other_user")
+		if err := userRepo.Save(ctx, nil, user); err != nil {
+			t.Fatalf("failed to save user1: %v", err)
+		}
+		if err := userRepo.Save(ctx, nil, user2); err != nil {
+			t.Fatalf("failed to save user2: %v", err)
+		}
+
+		// Create 2 sessions for user1
+		session1 := model.NewChatSession(uuid.NewString(), user.ID, "model1")
+		repo.Save(ctx, nil, session1)
+		repo.SaveMessage(ctx, nil, &model.ChatMessage{ID: uuid.NewString(), SessionID: session1.ID, Role: "user", Content: "msg1"})
+
+		session2 := model.NewChatSession(uuid.NewString(), user.ID, "model2")
+		repo.Save(ctx, nil, session2)
+		repo.SaveMessage(ctx, nil, &model.ChatMessage{ID: uuid.NewString(), SessionID: session2.ID, Role: "user", Content: "msg2"})
+
+		// Create 1 session for user2
+		session3 := model.NewChatSession(uuid.NewString(), user2.ID, "model3")
+		repo.Save(ctx, nil, session3)
+		repo.SaveMessage(ctx, nil, &model.ChatMessage{ID: uuid.NewString(), SessionID: session3.ID, Role: "user", Content: "msg3"})
+		// Act: Delete all sessions for user1
+		err := repo.DeleteAllByUserID(ctx, nil, user.ID)
+		if err != nil {
+			t.Fatalf("DeleteAllByUserID failed: %v", err)
+		}
+
+		// Assert: user1's sessions are gone, user2's session remains
+		user1Sessions, err1 := repo.ListByUser(ctx, nil, user.ID, 0, 0)
+		user2Sessions, err2 := repo.ListByUser(ctx, nil, user2.ID, 0, 0)
+
+		if err1 != nil || err2 != nil {
+			t.Fatalf("ListByUser failed during verification: %v, %v", err1, err2)
+		}
+
+		if len(user1Sessions) != 0 {
+			t.Errorf("expected 0 sessions for user1, but found %d", len(user1Sessions))
+		}
+		if len(user2Sessions) != 1 {
+			t.Errorf("expected 1 session for user2, but found %d", len(user2Sessions))
 		}
 	})
 }

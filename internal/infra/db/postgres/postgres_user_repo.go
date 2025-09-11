@@ -2,8 +2,10 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"telegram-ai-subscription/internal/domain"
@@ -55,6 +57,9 @@ SELECT id, telegram_id, username, registered_at, last_active_at,
 
 	var u model.User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
 		return nil, domain.ErrReadDatabaseRow
 	}
 	return &u, nil

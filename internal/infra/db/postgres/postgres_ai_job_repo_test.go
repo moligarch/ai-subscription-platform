@@ -4,10 +4,10 @@ package postgres
 
 import (
 	"context"
-	"testing"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/infra/security"
+	"testing"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +20,8 @@ func TestAIJobRepo_Integration(t *testing.T) {
 
 	// 1. Setup
 	ctx := context.Background()
-	repo := NewAIJobRepo(testPool)
+	tm := NewTxManager(testPool)
+	repo := NewAIJobRepo(testPool, tm)
 	userRepo := NewUserRepo(testPool)
 	encSvc, _ := security.NewEncryptionService("0123456789abcdef0123456789abcdef")
 	chatRepo := NewChatSessionRepo(testPool, nil, encSvc)
@@ -39,7 +40,7 @@ func TestAIJobRepo_Integration(t *testing.T) {
 		if err := chatRepo.Save(ctx, nil, session); err != nil {
 			t.Fatalf("failed to save session: %v", err)
 		}
-		if err := chatRepo.SaveMessage(ctx, nil, message); err != nil {
+		if _, err := chatRepo.SaveMessage(ctx, nil, message); err != nil {
 			t.Fatalf("failed to save message: %v", err)
 		}
 	}
@@ -51,7 +52,7 @@ func TestAIJobRepo_Integration(t *testing.T) {
 			ID:            uuid.NewString(),
 			Status:        model.AIJobStatusPending,
 			SessionID:     session.ID,
-			UserMessageID: message.ID,
+			UserMessageID: &message.ID,
 			CreatedAt:     time.Now(),
 		}
 		// Test Create
@@ -89,8 +90,8 @@ func TestAIJobRepo_Integration(t *testing.T) {
 		setupPrerequisites(t)
 
 		// Create two pending jobs
-		job1 := &model.AIJob{ID: uuid.NewString(), Status: model.AIJobStatusPending, SessionID: session.ID, UserMessageID: message.ID, CreatedAt: time.Now().Add(-1 * time.Second)}
-		job2 := &model.AIJob{ID: uuid.NewString(), Status: model.AIJobStatusPending, SessionID: session.ID, UserMessageID: message.ID, CreatedAt: time.Now()}
+		job1 := &model.AIJob{ID: uuid.NewString(), Status: model.AIJobStatusPending, SessionID: session.ID, UserMessageID: &message.ID, CreatedAt: time.Now().Add(-1 * time.Second)}
+		job2 := &model.AIJob{ID: uuid.NewString(), Status: model.AIJobStatusPending, SessionID: session.ID, UserMessageID: &message.ID, CreatedAt: time.Now()}
 		repo.Save(ctx, nil, job1)
 		repo.Save(ctx, nil, job2)
 

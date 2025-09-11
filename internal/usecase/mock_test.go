@@ -1,3 +1,5 @@
+//go:build !integration
+
 package usecase_test
 
 import (
@@ -51,8 +53,9 @@ type MockTelegramBot struct {
 		Rows [][]adapter.InlineButton
 	}
 
-	SendMessageFunc func(ctx context.Context, telegramID int64, text string) error
-	SendButtonsFunc func(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error
+	SendMessageFunc     func(ctx context.Context, telegramID int64, text string) error
+	SendButtonsFunc     func(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error
+	SetMenuCommandsFunc func(ctx context.Context, chatID int64, isAdmin bool) error
 }
 
 var _ adapter.TelegramBotAdapter = (*MockTelegramBot)(nil)
@@ -81,6 +84,13 @@ func (m *MockTelegramBot) SendButtons(ctx context.Context, telegramID int64, tex
 		Text string
 		Rows [][]adapter.InlineButton
 	}{telegramID, text, rows})
+	return nil
+}
+
+func (m *MockTelegramBot) SetMenuCommands(ctx context.Context, chatID int64, isAdmin bool) error {
+	if m.SetMenuCommandsFunc != nil {
+		return m.SetMenuCommandsFunc(ctx, chatID, isAdmin)
+	}
 	return nil
 }
 
@@ -853,7 +863,7 @@ type MockChatSessionRepo struct {
 	usersBySessID map[string]*model.User          // sessionID -> user
 
 	SaveFunc                func(ctx context.Context, tx repository.Tx, s *model.ChatSession) error
-	SaveMessageFunc         func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error
+	SaveMessageFunc         func(ctx context.Context, tx repository.Tx, m *model.ChatMessage) (bool, error)
 	DeleteFunc              func(ctx context.Context, tx repository.Tx, id string) error
 	FindActiveByUserFunc    func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error)
 	FindByIDFunc            func(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error)
@@ -861,6 +871,7 @@ type MockChatSessionRepo struct {
 	ListByUserFunc          func(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error)
 	CleanupOldMessagesFunc  func(ctx context.Context, userID string, retentionDays int) (int64, error)
 	FindUserBySessionIDFunc func(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error)
+	DeleteAllByUserIDFunc   func(ctx context.Context, tx repository.Tx, userID string) error
 }
 
 var _ repository.ChatSessionRepository = (*MockChatSessionRepo)(nil)
@@ -891,7 +902,7 @@ func (r *MockChatSessionRepo) Save(ctx context.Context, tx repository.Tx, s *mod
 	return nil
 }
 
-func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) error {
+func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *model.ChatMessage) (bool, error) {
 	if r.SaveMessageFunc != nil {
 		return r.SaveMessageFunc(ctx, tx, m)
 	}
@@ -899,7 +910,7 @@ func (r *MockChatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx,
 	defer r.mu.Unlock()
 	cp := *m
 	r.msgByID[m.SessionID] = append(r.msgByID[m.SessionID], &cp)
-	return nil
+	return true, nil
 }
 
 func (r *MockChatSessionRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
@@ -1009,6 +1020,22 @@ func (r *MockChatSessionRepo) CleanupOldMessages(ctx context.Context, userID str
 	defer r.mu.Unlock()
 	// no-op for in-memory
 	return 0, nil
+}
+
+func (r *MockChatSessionRepo) DeleteAllByUserID(ctx context.Context, tx repository.Tx, userID string) error {
+	if r.DeleteAllByUserIDFunc != nil {
+		return r.DeleteAllByUserIDFunc(ctx, tx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for id, s := range r.byID {
+		if s.UserID == userID {
+			delete(r.byID, id)
+			delete(r.msgByID, id)
+			delete(r.usersBySessID, id)
+		}
+	}
+	return nil
 }
 
 // ---- Mock AIJobRepository ----

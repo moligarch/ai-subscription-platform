@@ -31,10 +31,13 @@ SELECT id, model_name, input_token_price_micros, output_token_price_micros, acti
  LIMIT 1;`
 	row, err := pickRow(ctx, r.pool, tx, q, name)
 	if err != nil {
-		return nil, domain.ErrNotFound
+		return nil, domain.ErrOperationFailed
 	}
 	var p model.ModelPricing
 	if err := row.Scan(&p.ID, &p.ModelName, &p.InputTokenPriceMicros, &p.OutputTokenPriceMicros, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, domain.ErrNotFound
+		}
 		return nil, domain.ErrReadDatabaseRow
 	}
 	return &p, nil

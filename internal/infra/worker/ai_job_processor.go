@@ -171,7 +171,7 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 			Tokens:    usage.CompletionTokens,
 			Timestamp: time.Now(),
 		}
-		if err := p.chatRepo.SaveMessage(ctx, tx, &aiMsg); err != nil {
+		if _, err := p.chatRepo.SaveMessage(ctx, tx, &aiMsg); err != nil {
 			return err
 		}
 

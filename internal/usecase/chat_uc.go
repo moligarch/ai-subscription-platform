@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -67,7 +68,15 @@ func NewChatUseCase(
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
-	defer logging.TraceDuration(c.log, "ChatUC.StartChat")()
+		defer logging.TraceDuration(c.log, "ChatUC.StartChat")()
+
+	if _, err := c.prices.GetByModelName(ctx, nil, modelName); err != nil {
+		if errors.Is(err, domain.ErrNotFound) {
+			return nil, domain.ErrModelNotAvailable
+		}
+		return nil, err // Propagate other errors
+	}
+
 	// Acquire a short lock to serialize concurrent /chat presses per user.
 	lockKey := "chat:start:" + userID
 
@@ -126,16 +135,21 @@ func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage str
 			Content:   userMessage,
 			Timestamp: time.Now(),
 		}
-		if err := c.sessions.SaveMessage(ctx, tx, &userMsg); err != nil {
+		wasSaved, err := c.sessions.SaveMessage(ctx, tx, &userMsg)
+		if err != nil {
 			return err
 		}
 
 		// 2. Create the AI job
 		job := &model.AIJob{
-			Status:        model.AIJobStatusPending,
-			SessionID:     s.ID,
-			UserMessageID: userMsg.ID,
-			CreatedAt:     time.Now(),
+			Status:    model.AIJobStatusPending,
+			SessionID: s.ID,
+			CreatedAt: time.Now(),
+		}
+
+		// Only link the message ID if it was actually saved
+		if wasSaved {
+			job.UserMessageID = &userMsg.ID
 		}
 		if err := c.jobs.Save(ctx, tx, job); err != nil {
 			return err

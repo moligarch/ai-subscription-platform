@@ -20,6 +20,7 @@ import (
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
 	"telegram-ai-subscription/internal/infra/api"
 	pg "telegram-ai-subscription/internal/infra/db/postgres"
+	"telegram-ai-subscription/internal/infra/i18n"
 	"telegram-ai-subscription/internal/infra/logging"
 	appmetrics "telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
@@ -33,8 +34,8 @@ import (
 )
 
 var (
-	Version = "dev"
-	Commit  = "none"
+	version = "dev"
+	commit  = "none"
 )
 
 func main() {
@@ -67,9 +68,15 @@ func main() {
 		logger.Info().Msg("[DEV MODE] Enabled")
 	}
 
+	// ---- Localization ----
+	translator, err := i18n.NewTranslator("fa")
+	if err != nil {
+		logger.Fatal().Err(err).Msg("failed to load translations")
+	}
+
 	// ---- Metrics ----
 	appmetrics.MustRegister()
-	appmetrics.SetBuildInfo(Version, Commit)
+	appmetrics.SetBuildInfo(version, commit)
 
 	// ---- Redis ----
 	redisClient, err := red.NewClient(ctx, &cfg.Redis)
@@ -118,7 +125,7 @@ func main() {
 	dbPriceRepo := pg.NewModelPricingRepo(pool)
 	priceRepo := pg.NewModelPricingRepoCacheDecorator(dbPriceRepo, redisClient)
 
-	aiJobRepo := pg.NewAIJobRepo(pool)
+	aiJobRepo := pg.NewAIJobRepo(pool, txManager)
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	notifLogRepo := pg.NewNotificationLogRepo(pool)
@@ -160,7 +167,7 @@ func main() {
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, txManager, logger)
+	userUC := usecase.NewUserUseCase(userRepo, chatRepo, txManager, logger)
 	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
 	chatUC := usecase.NewChatUseCase(chatRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
@@ -178,7 +185,7 @@ func main() {
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cfg.Payment.ZarinPal.CallbackURL)
 
 	// ---- Telegram ----
-	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, rateLimiter, cfg.Bot.Workers, logger)
+	botAdapter, err := tele.NewRealTelegramBotAdapter(&cfg.Bot, userRepo, facade, translator, rateLimiter, cfg.Bot.Workers, logger)
 	if err != nil {
 		logger.Fatal().Err(err).Msg("telegram adapter")
 	}

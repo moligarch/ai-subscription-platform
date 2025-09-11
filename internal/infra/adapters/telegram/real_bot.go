@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,11 +18,10 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/i18n"
 	"telegram-ai-subscription/internal/infra/metrics"
 	red "telegram-ai-subscription/internal/infra/redis"
 )
-
-type commandHandler func(ctx context.Context, message *tgbotapi.Message) error
 
 // RealTelegramBotAdapter uses tgbotapi to poll updates and delegates to BotFacade.
 type RealTelegramBotAdapter struct {
@@ -35,10 +35,21 @@ type RealTelegramBotAdapter struct {
 	updateWorkers int
 	cancelPolling context.CancelFunc
 
-	log *zerolog.Logger
+	translator *i18n.Translator
+	log        *zerolog.Logger
 }
 
-func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRepository, facade *application.BotFacade, rateLimiter *red.RateLimiter, updateWorkers int, logger *zerolog.Logger) (*RealTelegramBotAdapter, error) {
+var _ adapter.TelegramBotAdapter = (*RealTelegramBotAdapter)(nil)
+
+func NewRealTelegramBotAdapter(
+	cfg *config.BotConfig,
+	userRepo repository.UserRepository,
+	facade *application.BotFacade,
+	translator *i18n.Translator,
+	rateLimiter *red.RateLimiter,
+	updateWorkers int,
+	logger *zerolog.Logger,
+) (*RealTelegramBotAdapter, error) {
 	if cfg == nil || facade == nil || userRepo == nil {
 		return nil, domain.ErrInvalidArgument
 	}
@@ -62,6 +73,7 @@ func NewRealTelegramBotAdapter(cfg *config.BotConfig, userRepo repository.UserRe
 		cfg:           cfg,
 		userRepo:      userRepo,
 		facade:        facade,
+		translator:    translator,
 		rateLimiter:   rateLimiter,
 		adminIDsMap:   adminMap,
 		updateWorkers: updateWorkers,
@@ -113,70 +125,6 @@ func (r *RealTelegramBotAdapter) StartPolling(ctx context.Context) error {
 func (r *RealTelegramBotAdapter) StopPolling() {
 	if r.cancelPolling != nil {
 		r.cancelPolling()
-	}
-}
-
-// adminOnly is a middleware that wraps a commandHandler to restrict access to admins.
-func (r *RealTelegramBotAdapter) adminOnly(next commandHandler) commandHandler {
-	return func(ctx context.Context, message *tgbotapi.Message) error {
-		if _, isAdmin := r.adminIDsMap[message.From.ID]; !isAdmin {
-			metrics.IncAdminCommand("/"+message.Command(), "unauthorized")
-			return r.SendMessage(ctx, message.Chat.ID, "You are not authorized to use this command.")
-		}
-		metrics.IncAdminCommand("/"+message.Command(), "authorized")
-		return next(ctx, message)
-	}
-}
-
-// commandRoutes defines all available bot commands and their handlers.
-func (r *RealTelegramBotAdapter) commandRoutes() map[string]commandHandler {
-	return map[string]commandHandler{
-		"start":  r.handleStartCommand,
-		"plans":  r.handlePlansCommand,
-		"status": r.handleStatusCommand,
-		"buy":    r.handleBuyCommand,
-		"chat":   r.handleChatCommand,
-		"bye":    r.handleByeCommand,
-		"help":   r.handleHelpCommand,
-
-		// These handlers are wrapped in our adminOnly middleware.
-		"create_plan":    r.adminOnly(r.handleCreatePlanCommand),
-		"delete_plan":    r.adminOnly(r.handleDeletePlanCommand),
-		"update_plan":    r.adminOnly(r.handleUpdatePlanCommand),
-		"update_pricing": r.adminOnly(r.handleUpdatePricingCommand),
-	}
-}
-
-func (r *RealTelegramBotAdapter) cbRoutes() map[string]cbHandler {
-	return map[string]cbHandler{
-		"cmd:menu":    r.menuCBRoute,
-		"cmd:plans":   r.planCBRoute,
-		"cmd:status":  r.statusCBRoute,
-		"cmd:chat":    r.chatCBRoute,
-		"cmd:bye":     r.chatEndCBRoute,
-		"cmd:history": r.historyCBRoute,
-	}
-}
-
-// Prefix-match callbacks
-func (r *RealTelegramBotAdapter) cbPrefixRoutes() []prefixCB {
-	return []prefixCB{
-		{
-			Prefix: "buy:",
-			Fn:     r.buyPrefixCBRoute,
-		},
-		{
-			Prefix: "chat:",
-			Fn:     r.chatPrefixCBRoute,
-		},
-		{
-			Prefix: "hist:cont:",
-			Fn:     r.continueChatPrefixCBRoute,
-		},
-		{
-			Prefix: "hist:del:",
-			Fn:     r.deleteChatPrefixCBRoute,
-		},
 	}
 }
 
@@ -241,6 +189,38 @@ func (b *RealTelegramBotAdapter) SendButtons(
 	return err
 }
 
+// SetMenuCommands configures the bot's persistent menu for a specific user.
+func (r *RealTelegramBotAdapter) SetMenuCommands(ctx context.Context, chatID int64, isAdmin bool) error {
+	// Define commands for regular users
+	userCommands := []tgbotapi.BotCommand{
+		{Command: "start", Description: r.translator.T("menu_restart")},
+		{Command: "plans", Description: r.translator.T("menu_plans")},
+		{Command: "status", Description: r.translator.T("menu_status")},
+		{Command: "settings", Description: r.translator.T("menu_settings")},
+		{Command: "help", Description: r.translator.T("menu_help")},
+	}
+
+	commands := userCommands
+	// If the user is an admin, add admin-specific commands
+	if isAdmin {
+		adminCommands := []tgbotapi.BotCommand{
+			{Command: "create_plan", Description: "➕ Create Plan"},
+			{Command: "update_plan", Description: "✏️ Update Plan"},
+			{Command: "delete_plan", Description: "🗑️ Delete Plan"},
+			{Command: "update_pricing", Description: "💲 Update Pricing"},
+		}
+		// Prepend admin commands to the user commands
+		commands = append(adminCommands, userCommands...)
+	}
+	
+	// Set the commands for the specific chat with the user
+	scope := tgbotapi.NewBotCommandScopeChat(chatID)
+	config := tgbotapi.NewSetMyCommandsWithScope(scope, commands...)
+	
+	_, err := r.bot.Request(config)
+	return err
+}
+
 func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbotapi.Update) error {
 	// 1. Determine command type for metrics and rate limiting
 	var commandType string
@@ -288,7 +268,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	}
 
 	// 3. Route the update
-	if update.CallbackQuery != nil {
+		if update.CallbackQuery != nil {
 		return r.handleQuery(ctx, update.CallbackQuery)
 	}
 
@@ -366,16 +346,16 @@ func (r *RealTelegramBotAdapter) sendMainMenu(ctx context.Context, telegramID in
 	}
 
 	rows := [][]adapter.InlineButton{
-		{{Text: "🛒 Plans", Data: "cmd:plans"}},
-		{{Text: "📊 Status", Data: "cmd:status"}},
-		{{Text: "💾 History", Data: "cmd:history"}},
-		{{Text: "💬 Start Chat", Data: "cmd:chat"}},
+		{{Text: r.translator.T("button_plans"), Data: "cmd:plans"}},
+		{{Text: r.translator.T("button_status"), Data: "cmd:status"}},
+		{{Text: r.translator.T("button_history"), Data: "cmd:history"}},
+		{{Text: r.translator.T("button_start_chat"), Data: "cmd:chat"}},
 	}
 	if hasActive {
-		rows = append(rows, []adapter.InlineButton{{Text: "⏹ End Chat", Data: "cmd:bye"}})
+		rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("button_end_chat"), Data: "cmd:bye"}})
 	}
 	if strings.TrimSpace(intro) == "" {
-		intro = "Welcome! Choose an action:"
+		intro = r.translator.T("welcome_message")
 	}
 	return r.SendButtons(ctx, telegramID, intro, rows)
 }
@@ -384,79 +364,75 @@ func (r *RealTelegramBotAdapter) sendMainMenu(ctx context.Context, telegramID in
 func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID int64) error {
 	plans, err := r.facade.PlanUC.List(ctx)
 	if err != nil || len(plans) == 0 {
-		return r.SendMessage(ctx, telegramID, "پلنی یافت نشد.")
+		return r.SendMessage(ctx, telegramID, r.translator.T("error_generic"))
 	}
-	rows := make([][]adapter.InlineButton, 0, len(plans))
+	rows := make([][]adapter.InlineButton, 0, len(plans)+1)
 	for _, p := range plans {
-		label := p.Name
-		// Minimal extra info
-		if p.PriceIRR > 0 && p.DurationDays > 0 {
-			label = p.Name + " — " + formatIRR(p.PriceIRR) + " / " + strconv.Itoa(p.DurationDays) + "d"
-		}
+		label := fmt.Sprintf("%s — %s / %d روز", p.Name, formatIRR(p.PriceIRR), p.DurationDays)
 		rows = append(rows, []adapter.InlineButton{{Text: label, Data: "buy:" + p.ID}})
 	}
-	rows = append(rows, []adapter.InlineButton{{Text: "◀️ منو اصلی", Data: "cmd:menu"}})
-	return r.SendButtons(ctx, telegramID, "پلن های موجود برای خریداری:", rows)
+	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
+	return r.SendButtons(ctx, telegramID, r.translator.T("plans_header"), rows)
 }
 
 // sendModelMenu shows available models as buttons.
 func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID int64) error {
 	models, _ := r.facade.ChatUC.ListModels(ctx)
 	if len(models) == 0 {
-		// default if none reported
-		models = []string{"gpt-4o-mini"}
+		models = []string{"gpt-4o-mini"} // Fallback
 	}
-	rows := make([][]adapter.InlineButton, 0, len(models))
+	rows := make([][]adapter.InlineButton, 0, len(models)+1)
 	for _, m := range models {
 		rows = append(rows, []adapter.InlineButton{{Text: m, Data: "chat:" + m}})
 	}
 
-	rows = append(rows, []adapter.InlineButton{{Text: "◀️ منو اصلی", Data: "cmd:menu"}})
-	return r.SendButtons(ctx, telegramID, "مدل مدنظر خود را برای شروع مکالمه انتخاب کنید:", rows)
+	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
+	return r.SendButtons(ctx, telegramID, r.translator.T("model_menu_header"), rows)
 }
 
 // sendEndChatButton renders a single End Chat button after chat starts.
 func (r *RealTelegramBotAdapter) sendEndChatButton(ctx context.Context, telegramID int64) error {
 	rows := [][]adapter.InlineButton{
-		{{Text: "⏹ پایان", Data: "cmd:bye"}},
-		{{Text: "◀️ منو اصلی", Data: "cmd:menu"}},
+		{{Text: r.translator.T("button_end_chat"), Data: "cmd:bye"}},
+		{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}},
 	}
-	return r.SendButtons(ctx, telegramID, "Chat started. Type your message, or tap to end:", rows)
+	return r.SendButtons(ctx, telegramID, r.translator.T("success_chat_continue"), rows) // Text here is minimal as the main message is sent from the command handler
 }
 
 func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID int64) error {
 	user, err := r.facade.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil || user == nil {
-		return r.SendMessage(ctx, telegramID, "شما هنوز ثبتنام نکرده اید. برای ثبت نام از /start استفاده کنید.")
+		return r.SendMessage(ctx, telegramID, r.translator.T("error_user_not_found"))
 	}
 
 	items, err := r.facade.ChatUC.ListHistory(ctx, user.ID, 0, 10)
 	if err != nil {
-		return r.SendMessage(ctx, telegramID, "دریافت تاریخچه مکالمات با خطا مواجه شد.")
+		return r.SendMessage(ctx, telegramID, r.translator.T("error_generic"))
 	}
 	if len(items) == 0 {
-		rows := [][]adapter.InlineButton{{{Text: "◀️ منو اصلی", Data: "cmd:menu"}}}
-		return r.SendButtons(ctx, telegramID, "مکالمه ای یافت نشد.", rows)
+		rows := [][]adapter.InlineButton{{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}}
+		return r.SendButtons(ctx, telegramID, r.translator.T("history_empty"), rows)
 	}
 
-	// Build rows: one row per session with [Continue] [Delete]
 	rows := make([][]adapter.InlineButton, 0, len(items)+1)
 	for idx, it := range items {
 		label := it.FirstMessage
 		if strings.TrimSpace(label) == "" {
-			label = "(empty)"
+			label = "(خالی)"
 		}
-		// prefix with index and model for clarity
-		display := strconv.Itoa(idx+1) + ") [" + it.Model + "] " + label
+		if r := []rune(label); len(r) > 25 {
+			label = string(r[:25]) + "…"
+		}
+
+		display := fmt.Sprintf("%d) [%s] %s", idx+1, it.Model, label)
 		rows = append(rows, []adapter.InlineButton{
 			{Text: display, Data: "hist:cont:" + it.SessionID},
-			{Text: "🗑 Delete", Data: "hist:del:" + it.SessionID},
+			{Text: r.translator.T("button_delete"), Data: "hist:del:" + it.SessionID},
 		})
 	}
-	// Footer row
-	rows = append(rows, []adapter.InlineButton{{Text: "◀️ Menu", Data: "cmd:menu"}})
+	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
 
-	return r.SendButtons(ctx, telegramID, "🗂️ Your chats:", rows)
+	return r.SendButtons(ctx, telegramID, r.translator.T("history_menu_header"), rows)
 }
 
 var httpURLRe = regexp.MustCompile(`https?:\/\/(?:[-\w]+\.)+[a-zA-Z]{2,}(?:\/[^\s\\\n]*)`)
