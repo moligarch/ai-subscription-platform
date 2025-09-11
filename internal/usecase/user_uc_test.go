@@ -5,6 +5,7 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +211,92 @@ func TestUserUseCase_Counting(t *testing.T) {
 		}
 		if count != 42 {
 			t.Errorf("expected count of inactive users to be 42, but got %d", count)
+		}
+	})
+}
+
+func TestUserUseCase_RegistrationFlow(t *testing.T) {
+	ctx := context.Background()
+	testLogger := newTestLogger()
+	testTranslator := newTestTranslator()
+	mockTxManager := NewMockTxManager()
+
+	t.Run("should guide a user through the full registration flow", func(t *testing.T) {
+		// --- Arrange ---
+		mockUserRepo := NewMockUserRepo()
+		mockChatRepo := NewMockChatSessionRepo()
+		mockRegStateRepo := NewMockRegistrationStateRepo()
+
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+
+		const tgID = int64(12345)
+		const fullName = "Test"
+		const phoneNumber = "+123456789"
+
+		// Seed the mock with a pending user
+		user := &model.User{ID: "user-1", TelegramID: tgID, RegistrationStatus: model.RegistrationStatusPending}
+		mockUserRepo.Save(ctx, nil, user)
+
+		// --- Act & Assert: Step 1 - Start the flow ---
+		// The /start command handler calls this.
+		err := uc.StartRegistration(ctx, tgID)
+		if err != nil {
+			t.Fatalf("StartRegistration failed: %v", err)
+		}
+
+		// --- Act & Assert: Step 2 - User provides Full Name ---
+		reply, markup, err := uc.ProcessRegistrationStep(ctx, tgID, fullName, "")
+		if err != nil {
+			t.Fatalf("ProcessRegistrationStep (full name) failed: %v", err)
+		}
+		if !strings.Contains(reply, "متشکرم") {
+			t.Errorf("Expected phone prompt, but got: %s", reply)
+		}
+		if markup == nil || markup.IsInline || !markup.Buttons[0][0].RequestContact {
+			t.Error("Expected a 'Share Contact' reply keyboard")
+		}
+
+		// Verify state was updated in Redis
+		state, _ := mockRegStateRepo.GetState(ctx, tgID)
+		if state.Step != repository.StateAwaitingPhone {
+			t.Errorf("Expected state to be 'awaiting_phone', but got '%s'", state.Step)
+		}
+		if state.Data["full_name"] != fullName {
+			t.Error("Full name was not saved correctly in the state")
+		}
+
+		// --- Act & Assert: Step 3 - User provides Phone Number ---
+		reply, markup, err = uc.ProcessRegistrationStep(ctx, tgID, "", phoneNumber)
+		if err != nil {
+			t.Fatalf("ProcessRegistrationStep (phone) failed: %v", err)
+		}
+		if !strings.Contains(reply, "اطلاعات شما") {
+			t.Errorf("Expected verification prompt, but got: %s", reply)
+		}
+		if markup == nil || !markup.IsInline || len(markup.Buttons) != 3 {
+			t.Error("Expected an inline keyboard with 3 verification buttons")
+		}
+
+		// Verify user was updated in the database
+		updatedUser, _ := mockUserRepo.FindByTelegramID(ctx, nil, tgID)
+		if updatedUser.FullName != fullName || updatedUser.PhoneNumber != phoneNumber {
+			t.Error("User record was not updated with full name and phone number")
+		}
+
+		// --- Act & Assert: Step 4 - User Completes Registration ---
+		err = uc.CompleteRegistration(ctx, tgID)
+		if err != nil {
+			t.Fatalf("CompleteRegistration failed: %v", err)
+		}
+
+		// Verify final user status and that Redis state was cleared
+		finalUser, _ := mockUserRepo.FindByTelegramID(ctx, nil, tgID)
+		if finalUser.RegistrationStatus != model.RegistrationStatusCompleted {
+			t.Error("Expected user registration status to be 'completed'")
+		}
+		finalState, _ := mockRegStateRepo.GetState(ctx, tgID)
+		if finalState != nil {
+			t.Error("Expected registration state to be cleared from Redis, but it was not")
 		}
 	})
 }
