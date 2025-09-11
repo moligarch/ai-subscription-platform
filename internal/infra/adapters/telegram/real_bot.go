@@ -36,7 +36,7 @@ type RealTelegramBotAdapter struct {
 	updateWorkers int
 	cancelPolling context.CancelFunc
 
-	translator i18n.Translator
+	translator *i18n.Translator
 	log        *zerolog.Logger
 }
 
@@ -46,7 +46,7 @@ func NewRealTelegramBotAdapter(
 	cfg *config.BotConfig,
 	userRepo repository.UserRepository,
 	facade *application.BotFacade,
-	translator i18n.Translator,
+	translator *i18n.Translator,
 	rateLimiter *red.RateLimiter,
 	updateWorkers int,
 	logger *zerolog.Logger,
