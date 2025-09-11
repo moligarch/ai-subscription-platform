@@ -1144,6 +1144,60 @@ func (r *MockNotificationLogRepo) Exists(ctx context.Context, tx repository.Tx, 
 	return exists, nil
 }
 
+// ---- Mock RegistrationStateRepository ----
+
+// MockRegistrationStateRepo mocks the repository for registration state.
+type MockRegistrationStateRepo struct {
+	mu   sync.Mutex
+	data map[int64]*repository.RegistrationState
+
+	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.RegistrationState) error
+	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.RegistrationState, error)
+	ClearStateFunc func(ctx context.Context, tgID int64) error
+}
+
+var _ repository.RegistrationStateRepository = (*MockRegistrationStateRepo)(nil)
+
+func NewMockRegistrationStateRepo() *MockRegistrationStateRepo {
+	return &MockRegistrationStateRepo{data: make(map[int64]*repository.RegistrationState)}
+}
+
+func (m *MockRegistrationStateRepo) makeKey(subscriptionID, kind string, thresholdDays int) string {
+	return fmt.Sprintf("%s:%s:%d", subscriptionID, kind, thresholdDays)
+}
+
+func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.RegistrationState) error {
+	if m.SetStateFunc != nil {
+		return m.SetStateFunc(ctx, tgID, state)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[tgID] = state
+	return nil
+}
+
+func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.RegistrationState, error) {
+	if m.GetStateFunc != nil {
+		return m.GetStateFunc(ctx, tgID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state, ok := m.data[tgID]; ok {
+		return state, nil
+	}
+	return nil, redis.Nil // Simulate key not found
+}
+
+func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) error {
+	if m.ClearStateFunc != nil {
+		return m.ClearStateFunc(ctx, tgID)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, tgID)
+	return nil
+}
+
 // =============================
 // Infra helpers for tests
 // =============================
