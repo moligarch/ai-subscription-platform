@@ -12,13 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
+	"gopkg.in/yaml.v2"
 
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/i18n"
 )
 
 // -----------------------------
@@ -41,49 +44,24 @@ func cloneMessages(ms []*model.ChatMessage) []model.ChatMessage {
 
 // ---- Mock TelegramBotAdapter ----
 
+// MockTelegramBot now implements the new SendMessage(SendMessageParams) interface.
 type MockTelegramBot struct {
 	mu   sync.Mutex
-	Sent []struct {
-		ID   int64
-		Text string
-	}
-	SentBtns []struct {
-		ID   int64
-		Text string
-		Rows [][]adapter.InlineButton
-	}
+	Sent []adapter.SendMessageParams // Capture all sent message parameters
 
-	SendMessageFunc     func(ctx context.Context, telegramID int64, text string) error
-	SendButtonsFunc     func(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error
+	SendMessageFunc     func(ctx context.Context, params adapter.SendMessageParams) error
 	SetMenuCommandsFunc func(ctx context.Context, chatID int64, isAdmin bool) error
 }
 
 var _ adapter.TelegramBotAdapter = (*MockTelegramBot)(nil)
 
-func (m *MockTelegramBot) SendMessage(ctx context.Context, telegramID int64, text string) error {
+func (m *MockTelegramBot) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
 	if m.SendMessageFunc != nil {
-		return m.SendMessageFunc(ctx, telegramID, text)
+		return m.SendMessageFunc(ctx, params)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Sent = append(m.Sent, struct {
-		ID   int64
-		Text string
-	}{telegramID, text})
-	return nil
-}
-
-func (m *MockTelegramBot) SendButtons(ctx context.Context, telegramID int64, text string, rows [][]adapter.InlineButton) error {
-	if m.SendButtonsFunc != nil {
-		return m.SendButtonsFunc(ctx, telegramID, text, rows)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.SentBtns = append(m.SentBtns, struct {
-		ID   int64
-		Text string
-		Rows [][]adapter.InlineButton
-	}{telegramID, text, rows})
+	m.Sent = append(m.Sent, params)
 	return nil
 }
 
@@ -1267,4 +1245,31 @@ func (l *MockLocker) Unlock(ctx context.Context, key, token string) error {
 func newTestLogger() *zerolog.Logger {
 	logger := zerolog.New(io.Discard)
 	return &logger
+}
+
+// --- Mock Translator
+type mockTranslate struct {
+	translations map[string]string
+}
+
+func (t *mockTranslate) T(key string, args ...interface{}) string {
+	format, ok := t.translations[key]
+	if !ok {
+		return key
+	}
+	if len(args) > 0 {
+		return fmt.Sprintf(format, args...)
+	}
+	return format
+}
+
+func newTestTranslator() i18n.Translator {
+	// We create a mock translator from a simple YAML string
+	// to avoid file IO in tests.
+	yamlData := "reg_start: 'Welcome %s'"
+	var translations map[string]string
+	_ = yaml.Unmarshal([]byte(yamlData), &translations)
+
+	mT := mockTranslate{translations: translations}
+	return &mT
 }
