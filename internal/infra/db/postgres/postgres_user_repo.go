@@ -26,15 +26,19 @@ func NewUserRepo(pool *pgxpool.Pool) *userRepo {
 func (r *userRepo) Save(ctx context.Context, tx repository.Tx, u *model.User) error {
 	const q = `
 INSERT INTO users (
-  id, telegram_id, username, registered_at, last_active_at,
+  id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
   allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
 ) VALUES (
-  $1,$2,$3,$4,$5,$6,$7,$8,$9,$10
+  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
 ) ON CONFLICT (id) DO UPDATE SET
-  telegram_id=$2, username=$3, last_active_at=$5,
-  allow_message_storage=$6, auto_delete_messages=$7, message_retention_days=$8, data_encrypted=$9, is_admin=$10;
+  username = EXCLUDED.username,
+  full_name = EXCLUDED.full_name,
+  phone_number = EXCLUDED.phone_number,
+  registration_status = EXCLUDED.registration_status,
+  last_active_at = EXCLUDED.last_active_at,
+  allow_message_storage = EXCLUDED.allow_message_storage;
 `
-	_, err := execSQL(ctx, r.pool, tx, q, u.ID, u.TelegramID, u.Username, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
+	_, err := execSQL(ctx, r.pool, tx, q, u.ID, u.TelegramID, u.Username, u.FullName, u.PhoneNumber, u.RegistrationStatus, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
 	if err != nil {
 		if err == domain.ErrInvalidArgument || err == domain.ErrInvalidExecContext {
 			return err
@@ -46,7 +50,7 @@ INSERT INTO users (
 
 func (r *userRepo) FindByTelegramID(ctx context.Context, tx repository.Tx, tgID int64) (*model.User, error) {
 	const q = `
-SELECT id, telegram_id, username, registered_at, last_active_at,
+SELECT id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
        allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
   FROM users WHERE telegram_id=$1;`
 
@@ -56,7 +60,7 @@ SELECT id, telegram_id, username, registered_at, last_active_at,
 	}
 
 	var u model.User
-	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -67,7 +71,7 @@ SELECT id, telegram_id, username, registered_at, last_active_at,
 
 func (r *userRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
 	const q = `
-SELECT id, telegram_id, username, registered_at, last_active_at,
+SELECT id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
        allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
   FROM users WHERE id=$1;`
 
@@ -77,7 +81,10 @@ SELECT id, telegram_id, username, registered_at, last_active_at,
 	}
 
 	var u model.User
-	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.ErrNotFound
+		}
 		return nil, domain.ErrReadDatabaseRow
 	}
 	return &u, nil
@@ -91,6 +98,9 @@ func (r *userRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error
 
 	var n int
 	if err := row.Scan(&n); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, domain.ErrNotFound
+		}
 		return 0, domain.ErrReadDatabaseRow
 	}
 
@@ -104,6 +114,9 @@ func (r *userRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, sin
 	}
 	var n int
 	if err := row.Scan(&n); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, domain.ErrNotFound
+		}
 		return 0, domain.ErrReadDatabaseRow
 	}
 	return n, nil

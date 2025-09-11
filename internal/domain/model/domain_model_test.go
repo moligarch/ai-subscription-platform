@@ -53,16 +53,17 @@ func TestNewUser(t *testing.T) {
 		}
 	})
 
-	t.Run("should fail with empty username", func(t *testing.T) {
+	t.Run("should succeed with an empty username", func(t *testing.T) {
+		// It is valid for a Telegram user to not have a public @username.
 		user, err := NewUser("", 12345, "")
-		if err == nil {
-			t.Fatal("expected an error for empty username, but got nil")
+		if err != nil {
+			t.Fatalf("expected no error when creating a user with an empty username, but got: %v", err)
 		}
-		if user != nil {
-			t.Errorf("expected user to be nil on error, but it was not")
+		if user == nil {
+			t.Fatal("expected user to be non-nil, but got nil")
 		}
-		if !errors.Is(err, domain.ErrInvalidArgument) {
-			t.Errorf("expected error to be ErrInvalidArgument, but got %T", err)
+		if user.Username != "" {
+			t.Errorf("expected username to be empty, but got '%s'", user.Username)
 		}
 	})
 }
