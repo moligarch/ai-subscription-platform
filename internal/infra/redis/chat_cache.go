@@ -9,11 +9,11 @@ import (
 )
 
 type ChatCache struct {
-	client *Client
+	client *redClient
 	ttl    time.Duration
 }
 
-func NewChatCache(client *Client, ttl time.Duration) *ChatCache {
+func NewChatCache(client *redClient, ttl time.Duration) *ChatCache {
 	return &ChatCache{
 		client: client,
 		ttl:    ttl,

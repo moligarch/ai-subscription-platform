@@ -92,7 +92,10 @@ func (n *notificationUC) CheckAndSendExpiryNotifications(ctx context.Context) (i
 			}
 
 			message := fmt.Sprintf("👋 Your subscription is expiring in approximately %d day(s). Use /plans to renew.", daysLeft)
-			if err := n.bot.SendMessage(ctx, user.TelegramID, message); err != nil {
+			if err := n.bot.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID: user.TelegramID,
+				Text:   message,
+			}); err != nil {
 				n.log.Error().Err(err).Int64("tg_id", user.TelegramID).Msg("failed to send notification")
 				continue // Don't log if we couldn't send
 			}

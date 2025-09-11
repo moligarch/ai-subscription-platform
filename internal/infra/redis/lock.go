@@ -18,7 +18,7 @@ type RedisLocker struct {
 	cli *redis.Client
 }
 
-func NewLocker(c *Client) *RedisLocker {
+func NewLocker(c *redClient) *RedisLocker {
 	return &RedisLocker{cli: c.cli}
 }
 

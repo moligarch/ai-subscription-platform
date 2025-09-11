@@ -22,27 +22,13 @@ func NewNoopBotAdapter() *NoopBotAdapter {
 }
 
 // SendMessage logs the message and simulates small delay.
-func (b *NoopBotAdapter) SendMessage(ctx context.Context, tgID int64, text string) error {
-	// Simulate slight processing time and respect ctx
+func (b *NoopBotAdapter) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
 	select {
 	case <-time.After(100 * time.Millisecond):
-		// proceed
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	log.Printf("[noop-telegram] To user %d: %s\n", tgID, text)
-	return nil
-}
-
-func (b *NoopBotAdapter) SendButtons(ctx context.Context, tgID int64, text string, rows [][]adapter.InlineButton) error {
-	// Simulate slight processing time and respect ctx
-	select {
-	case <-time.After(100 * time.Millisecond):
-		// proceed
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	log.Printf("[noop-telegram] To user %d: %s [buttons: %v]\n", tgID, text, rows)
+	log.Printf("[noop-telegram] To user %d: %s [markup: %+v]\n", params.ChatID, params.Text, params.ReplyMarkup)
 	return nil
 }
 

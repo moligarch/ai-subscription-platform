@@ -27,18 +27,29 @@ type UserUseCase interface {
 }
 
 type userUC struct {
-	users    repository.UserRepository
-	sessions repository.ChatSessionRepository
-	tm       repository.TransactionManager
-	log      *zerolog.Logger
+	users      repository.UserRepository
+	sessions   repository.ChatSessionRepository
+	regState   repository.RegistrationStateRepository
+	translator i18n.Translator
+	tm         repository.TransactionManager
+	log        *zerolog.Logger
 }
 
-func NewUserUseCase(users repository.UserRepository, sessions repository.ChatSessionRepository, tm repository.TransactionManager, logger *zerolog.Logger) *userUC {
+func NewUserUseCase(
+	users repository.UserRepository,
+	sessions repository.ChatSessionRepository,
+	regState repository.RegistrationStateRepository,
+	translator i18n.Translator,
+	tm repository.TransactionManager,
+	logger *zerolog.Logger,
+) *userUC {
 	return &userUC{
-		users:    users,
-		sessions: sessions,
-		tm:       tm,
-		log:      logger,
+		users:      users,
+		sessions:   sessions,
+		regState:   regState,
+		translator: translator,
+		tm:         tm,
+		log:        logger,
 	}
 }
 

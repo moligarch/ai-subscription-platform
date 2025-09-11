@@ -92,7 +92,10 @@ func (s *Server) notifyPaymentSuccess(ctx context.Context, p *model.Payment) {
 		"پلن شما فعال شد. برای جزئیات از /status استفاده کنید یا با /chat گفتگو را شروع کنید."
 
 	// Telegram adapter port sends by TelegramID
-	_ = s.bot.SendMessage(c2, u.TelegramID, msg)
+	_ = s.bot.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID: u.TelegramID,
+		Text:   msg,
+	})
 }
 
 var successTpl = template.Must(template.New("ok").Parse(`

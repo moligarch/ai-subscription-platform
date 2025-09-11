@@ -16,6 +16,7 @@ import (
 	"telegram-ai-subscription/internal/application"
 	"telegram-ai-subscription/internal/config"
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/i18n"
@@ -35,7 +36,7 @@ type RealTelegramBotAdapter struct {
 	updateWorkers int
 	cancelPolling context.CancelFunc
 
-	translator *i18n.Translator
+	translator i18n.Translator
 	log        *zerolog.Logger
 }
 
@@ -45,7 +46,7 @@ func NewRealTelegramBotAdapter(
 	cfg *config.BotConfig,
 	userRepo repository.UserRepository,
 	facade *application.BotFacade,
-	translator *i18n.Translator,
+	translator i18n.Translator,
 	rateLimiter *red.RateLimiter,
 	updateWorkers int,
 	logger *zerolog.Logger,
@@ -128,64 +129,57 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 	}
 }
 
-// SendMessage implements the adapter port using internal user ID -> Telegram ID mapping via repo.
-func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, tgID int64, text string) error {
-	msg := tgbotapi.NewMessage(tgID, text)
+// SendMessage is the single method for sending any kind of message.
+func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
+	msg := tgbotapi.NewMessage(params.ChatID, params.Text)
+
+	// Apply ParseMode if provided.
+	if params.ParseMode != "" {
+		msg.ParseMode = params.ParseMode
+	}
+
+	// Apply ReplyMarkup if provided.
+	if params.ReplyMarkup != nil {
+		markup := params.ReplyMarkup
+		if markup.IsInline {
+			// Build an InlineKeyboardMarkup
+			kbRows := make([][]tgbotapi.InlineKeyboardButton, 0, len(markup.Buttons))
+			for _, row := range markup.Buttons {
+				r := make([]tgbotapi.InlineKeyboardButton, 0, len(row))
+				for _, btn := range row {
+					var kb tgbotapi.InlineKeyboardButton
+					if btn.URL != "" {
+						kb = tgbotapi.NewInlineKeyboardButtonURL(btn.Text, btn.URL)
+					} else {
+						kb = tgbotapi.NewInlineKeyboardButtonData(btn.Text, btn.Data)
+					}
+					r = append(r, kb)
+				}
+				kbRows = append(kbRows, r)
+			}
+			msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(kbRows...)
+		} else {
+			// Build a ReplyKeyboardMarkup
+			kbRows := make([][]tgbotapi.KeyboardButton, 0, len(markup.Buttons))
+			for _, row := range markup.Buttons {
+				r := make([]tgbotapi.KeyboardButton, 0, len(row))
+				for _, btn := range row {
+					kb := tgbotapi.NewKeyboardButton(btn.Text)
+					if btn.RequestContact {
+						kb.RequestContact = true
+					}
+					r = append(r, kb)
+				}
+				kbRows = append(kbRows, r)
+			}
+			replyKeyboard := tgbotapi.NewReplyKeyboard(kbRows...)
+			replyKeyboard.OneTimeKeyboard = markup.IsOneTime
+			replyKeyboard.Selective = markup.IsPersonal
+			msg.ReplyMarkup = replyKeyboard
+		}
+	}
+
 	_, err := r.bot.Send(msg)
-	return err
-}
-
-// SendButtons sends a message with inline buttons using tgbotapi.
-// - If btn.URL is set, the button opens a link
-// - Else if btn.Data is set, the button sends callback data
-// - Else a safe fallback uses btn.Text as callback data
-func (b *RealTelegramBotAdapter) SendButtons(
-	ctx context.Context,
-	telegramID int64,
-	text string,
-	rows [][]adapter.InlineButton,
-) error {
-	// Support early cancellation
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	// Build inline keyboard rows
-	kbRows := make([][]tgbotapi.InlineKeyboardButton, 0, len(rows))
-	for _, row := range rows {
-		if len(row) == 0 {
-			continue
-		}
-		r := make([]tgbotapi.InlineKeyboardButton, 0, len(row))
-		for _, btn := range row {
-			label := strings.TrimSpace(btn.Text)
-			if label == "" {
-				label = "•"
-			}
-			var kb tgbotapi.InlineKeyboardButton
-			switch {
-			case btn.URL != "":
-				kb = tgbotapi.NewInlineKeyboardButtonURL(label, btn.URL)
-			case btn.Data != "":
-				kb = tgbotapi.NewInlineKeyboardButtonData(label, btn.Data)
-			default:
-				// safe fallback: use text as callback data
-				kb = tgbotapi.NewInlineKeyboardButtonData(label, label)
-			}
-			r = append(r, kb)
-		}
-		kbRows = append(kbRows, r)
-	}
-
-	markup := tgbotapi.NewInlineKeyboardMarkup(kbRows...)
-	msg := tgbotapi.NewMessage(telegramID, text)
-	msg.ReplyMarkup = markup
-
-	// NOTE: field name is commonly 'bot' on the adapter; adjust if your struct uses a different name.
-	// This matches the same underlying client you already use in SendMessage.
-	_, err := b.bot.Send(msg)
 	return err
 }
 
@@ -212,82 +206,125 @@ func (r *RealTelegramBotAdapter) SetMenuCommands(ctx context.Context, chatID int
 		// Prepend admin commands to the user commands
 		commands = append(adminCommands, userCommands...)
 	}
-	
+
 	// Set the commands for the specific chat with the user
 	scope := tgbotapi.NewBotCommandScopeChat(chatID)
 	config := tgbotapi.NewSetMyCommandsWithScope(scope, commands...)
-	
+
 	_, err := r.bot.Request(config)
 	return err
 }
 
 func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbotapi.Update) error {
-	// 1. Determine command type for metrics and rate limiting
-	var commandType string
 	var tgUser *tgbotapi.User
 	var chatID int64
 
+	// 1. Uniformly extract user and chat info from the update.
 	if update.CallbackQuery != nil {
 		tgUser = update.CallbackQuery.From
-		chatID = update.CallbackQuery.Message.Chat.ID
-		parts := strings.Split(update.CallbackQuery.Data, ":")
-		if len(parts) > 0 {
-			commandType = "callback:" + parts[0]
-		} else {
-			commandType = "callback:unknown"
+		if update.CallbackQuery.Message != nil {
+			chatID = update.CallbackQuery.Message.Chat.ID
 		}
 	} else if update.Message != nil {
 		tgUser = update.Message.From
 		chatID = update.Message.Chat.ID
-		if update.Message.IsCommand() {
-			commandType = "/" + update.Message.Command()
-		} else if update.Message.Text != "" {
-			commandType = "message"
-		} else {
-			commandType = "other"
-		}
 	} else {
-		return nil // Not an update we can handle
+		return nil // Not an update we can handle.
 	}
 
 	if tgUser == nil {
 		return nil
 	}
 
+	// 2. Get or create the user record to check their registration status.
+	user, err := r.facade.UserUC.RegisterOrFetch(ctx, tgUser.ID, tgUser.UserName)
+	if err != nil {
+		r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("failed to register or fetch user")
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID:    tgUser.ID,
+			Text:      r.translator.T("error_generic"),
+			ParseMode: tgbotapi.ModeMarkdownV2,
+		})
+	}
+
+	// 3. --- REGISTRATION STATE MACHINE ---
+	// If the user's registration is pending, all interactions are routed here.
+	if user.RegistrationStatus == model.RegistrationStatusPending {
+		// Callbacks (e.g., "Verify", "Cancel") MUST be handled by the callback router.
+		if update.CallbackQuery != nil {
+			return r.handleQuery(ctx, update.CallbackQuery)
+		}
+
+		// The /start command should always be allowed to (re)start the flow.
+		if update.Message != nil && update.Message.IsCommand() && update.Message.Command() == "start" {
+			return r.handleStartCommand(ctx, update.Message)
+		}
+
+		// Any other message (text or contact) is an answer to a registration question.
+		if update.Message != nil {
+			return r.handleRegistrationMessage(ctx, update.Message)
+		}
+		return nil // Ignore other update types (e.g., photos) during registration.
+	}
+
+	// 4. --- NORMAL OPERATION FOR COMPLETED USERS ---
+	// This block only runs if registration is complete.
+	var commandType string
+	if update.CallbackQuery != nil {
+		parts := strings.Split(update.CallbackQuery.Data, ":")
+		commandType = "callback:" + parts[0]
+	} else if update.Message != nil && update.Message.IsCommand() {
+		commandType = "/" + update.Message.Command()
+	} else {
+		commandType = "message"
+	}
 	metrics.IncTelegramCommand(commandType)
 
-	// 2. Rate Limiting
 	if r.rateLimiter != nil {
 		allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(tgUser.ID, commandType), 20, time.Minute)
 		if err != nil {
 			r.log.Error().Err(err).Msg("rate limit error")
 		} else if !allowed {
 			metrics.IncRateLimitTriggered()
-			return r.SendMessage(ctx, chatID, "Rate limit exceeded. Please try again later.")
+			return r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID:    chatID,
+				Text:      r.translator.T("rate_limit_exceeded"),
+				ParseMode: tgbotapi.ModeMarkdownV2,
+			})
 		}
 	}
 
-	// 3. Route the update
-		if update.CallbackQuery != nil {
+	// Route to appropriate handlers
+	if update.CallbackQuery != nil {
 		return r.handleQuery(ctx, update.CallbackQuery)
 	}
-
 	if update.Message.IsCommand() {
 		if handler, ok := r.commandRoutes()[update.Message.Command()]; ok {
 			return handler(ctx, update.Message)
 		}
-		return r.SendMessage(ctx, chatID, "Unknown command.")
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID:    chatID,
+			Text:      r.translator.T("unknown_command"),
+			ParseMode: tgbotapi.ModeMarkdownV2,
+		})
 	}
-
 	if update.Message.Text != "" {
 		reply, err := r.facade.HandleChatMessage(ctx, tgUser.ID, update.Message.Text)
 		if err != nil {
 			r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("HandleChatMessage failed")
-			_ = r.SendMessage(ctx, chatID, "Sorry, I encountered an error.")
+			_ = r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID:    chatID,
+				Text:      r.translator.T("error_generic"),
+				ParseMode: tgbotapi.ModeMarkdownV2,
+			})
 			return nil
 		}
 		if strings.TrimSpace(reply) != "" {
-			return r.SendMessage(ctx, chatID, reply)
+			return r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID:    chatID,
+				Text:      reply,
+				ParseMode: tgbotapi.ModeMarkdownV2,
+			})
 		}
 	}
 
@@ -318,7 +355,11 @@ func (r *RealTelegramBotAdapter) handleQuery(ctx context.Context, query *tgbotap
 	if r.rateLimiter != nil {
 		if allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(chatID, "cb:"+data), 30, time.Minute); err == nil && !allowed {
 			metrics.IncRateLimitTriggered()
-			return r.SendMessage(ctx, chatID, "تعداد درخواست غیرمجاز. دسترسی شما به مدت 30 دقیقه محدود شد.")
+			return r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID:    chatID,
+				Text:      r.translator.T("rate_limit_exceeded"),
+				ParseMode: tgbotapi.ModeMarkdownV2,
+			})
 		}
 	}
 
@@ -345,76 +386,126 @@ func (r *RealTelegramBotAdapter) sendMainMenu(ctx context.Context, telegramID in
 		}
 	}
 
-	rows := [][]adapter.InlineButton{
+	rows := [][]adapter.Button{
 		{{Text: r.translator.T("button_plans"), Data: "cmd:plans"}},
 		{{Text: r.translator.T("button_status"), Data: "cmd:status"}},
 		{{Text: r.translator.T("button_history"), Data: "cmd:history"}},
 		{{Text: r.translator.T("button_start_chat"), Data: "cmd:chat"}},
 	}
 	if hasActive {
-		rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("button_end_chat"), Data: "cmd:bye"}})
+		rows = append(rows, []adapter.Button{{Text: r.translator.T("button_end_chat"), Data: "cmd:bye"}})
 	}
-	if strings.TrimSpace(intro) == "" {
-		intro = r.translator.T("welcome_message")
-	}
-	return r.SendButtons(ctx, telegramID, intro, rows)
+
+	markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      telegramID,
+		Text:        intro,
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	})
 }
 
 // sendPlansMenu lists all plans as buttons; pressing a plan starts the buy flow.
 func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID int64) error {
 	plans, err := r.facade.PlanUC.List(ctx)
-	if err != nil || len(plans) == 0 {
-		return r.SendMessage(ctx, telegramID, r.translator.T("error_generic"))
+	if err != nil {
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID:    telegramID,
+			Text:      r.translator.T("error_generic"),
+			ParseMode: tgbotapi.ModeMarkdownV2,
+		}) // Localized
 	}
-	rows := make([][]adapter.InlineButton, 0, len(plans)+1)
+	if len(plans) == 0 {
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID:    telegramID,
+			Text:      r.translator.T("no_plan_header"),
+			ParseMode: tgbotapi.ModeMarkdownV2,
+		}) // Localized
+	}
+	rows := make([][]adapter.Button, 0, len(plans)+1)
 	for _, p := range plans {
 		label := fmt.Sprintf("%s — %s / %d روز", p.Name, formatIRR(p.PriceIRR), p.DurationDays)
-		rows = append(rows, []adapter.InlineButton{{Text: label, Data: "buy:" + p.ID}})
+		rows = append(rows, []adapter.Button{{Text: label, Data: "buy:" + p.ID}})
 	}
-	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
-	return r.SendButtons(ctx, telegramID, r.translator.T("plans_header"), rows)
+	rows = append(rows, []adapter.Button{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
+
+	markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      telegramID,
+		Text:        r.translator.T("plans_header"),
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	})
+	// Localized
 }
 
 // sendModelMenu shows available models as buttons.
 func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID int64) error {
 	models, _ := r.facade.ChatUC.ListModels(ctx)
 	if len(models) == 0 {
-		models = []string{"gpt-4o-mini"} // Fallback
-	}
-	rows := make([][]adapter.InlineButton, 0, len(models)+1)
-	for _, m := range models {
-		rows = append(rows, []adapter.InlineButton{{Text: m, Data: "chat:" + m}})
+		models = nil
 	}
 
-	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
-	return r.SendButtons(ctx, telegramID, r.translator.T("model_menu_header"), rows)
+	rows := make([][]adapter.Button, 0, len(models)+1)
+	for _, m := range models {
+		rows = append(rows, []adapter.Button{{Text: m, Data: "chat:" + m}})
+	}
+	rows = append(rows, []adapter.Button{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
+
+	markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      telegramID,
+		Text:        r.translator.T("model_menu_header"),
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	}) // Localized
 }
 
 // sendEndChatButton renders a single End Chat button after chat starts.
 func (r *RealTelegramBotAdapter) sendEndChatButton(ctx context.Context, telegramID int64) error {
-	rows := [][]adapter.InlineButton{
+	rows := [][]adapter.Button{
 		{{Text: r.translator.T("button_end_chat"), Data: "cmd:bye"}},
 		{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}},
 	}
-	return r.SendButtons(ctx, telegramID, r.translator.T("success_chat_continue"), rows) // Text here is minimal as the main message is sent from the command handler
+	markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      telegramID,
+		Text:        r.translator.T("success_chat_continue"),
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	}) // Localized
 }
 
 func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID int64) error {
 	user, err := r.facade.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil || user == nil {
-		return r.SendMessage(ctx, telegramID, r.translator.T("error_user_not_found"))
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: telegramID,
+			Text:   r.translator.T("error_user_not_found"),
+		}) // Localized
 	}
 
 	items, err := r.facade.ChatUC.ListHistory(ctx, user.ID, 0, 10)
 	if err != nil {
-		return r.SendMessage(ctx, telegramID, r.translator.T("error_generic"))
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: telegramID,
+			Text:   r.translator.T("error_generic"),
+		}) // Localized
 	}
 	if len(items) == 0 {
-		rows := [][]adapter.InlineButton{{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}}
-		return r.SendButtons(ctx, telegramID, r.translator.T("history_empty"), rows)
+		markup := adapter.ReplyMarkup{
+			Buttons:  [][]adapter.Button{{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}},
+			IsInline: true,
+		}
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID:      telegramID,
+			Text:        r.translator.T("history_empty"),
+			ParseMode:   tgbotapi.ModeMarkdownV2,
+			ReplyMarkup: &markup,
+		}) // Localized
 	}
 
-	rows := make([][]adapter.InlineButton, 0, len(items)+1)
+	rows := make([][]adapter.Button, 0, len(items)+1)
 	for idx, it := range items {
 		label := it.FirstMessage
 		if strings.TrimSpace(label) == "" {
@@ -425,14 +516,20 @@ func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID
 		}
 
 		display := fmt.Sprintf("%d) [%s] %s", idx+1, it.Model, label)
-		rows = append(rows, []adapter.InlineButton{
+		rows = append(rows, []adapter.Button{
 			{Text: display, Data: "hist:cont:" + it.SessionID},
 			{Text: r.translator.T("button_delete"), Data: "hist:del:" + it.SessionID},
 		})
 	}
-	rows = append(rows, []adapter.InlineButton{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
+	rows = append(rows, []adapter.Button{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
 
-	return r.SendButtons(ctx, telegramID, r.translator.T("history_menu_header"), rows)
+	markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      telegramID,
+		Text:        r.translator.T("history_menu_header"),
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	}) // Localized
 }
 
 var httpURLRe = regexp.MustCompile(`https?:\/\/(?:[-\w]+\.)+[a-zA-Z]{2,}(?:\/[^\s\\\n]*)`)
@@ -467,4 +564,15 @@ func formatIRR(v int64) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String() + " IRR"
+}
+
+// It will safely escape any string for use in MarkdownV2.
+func (r *RealTelegramBotAdapter) escapeMarkdownV2(s string) string {
+	// List of all characters that must be escaped in MarkdownV2
+	replacer := strings.NewReplacer(
+		"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
+		"~", "\\~", "`", "\\`", ">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
+		"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}", ".", "\\.", "!", "\\!",
+	)
+	return replacer.Replace(s)
 }

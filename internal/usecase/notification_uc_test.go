@@ -56,7 +56,7 @@ func TestNotificationUseCase(t *testing.T) {
 		if len(mockBot.Sent) != 1 {
 			t.Fatal("expected one message to be sent")
 		}
-		if mockBot.Sent[0].ID != user.TelegramID {
+		if mockBot.Sent[0].ChatID != user.TelegramID {
 			t.Error("message sent to wrong telegram user")
 		}
 	})
