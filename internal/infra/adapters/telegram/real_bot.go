@@ -131,7 +131,7 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 
 // SendMessage is the single method for sending any kind of message.
 func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
-	msg := tgbotapi.NewMessage(params.ChatID, params.Text)
+	msg := tgbotapi.NewMessage(params.ChatID, r.escapeMarkdownV2(params.Text))
 
 	// Apply ParseMode if provided.
 	if params.ParseMode != "" {

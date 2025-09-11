@@ -355,11 +355,7 @@ func (r *RealTelegramBotAdapter) handleCreatePlanCommand(ctx context.Context, me
 		r.log.Error().Err(err).Msg("failed to create plan")
 		reply = r.translator.T("error_create_plan")
 	} else {
-		// 1. Escape the plan ID before putting it in the message.
-		escapedID := r.escapeMarkdownV2(plan.ID)
-
-		// 2. Get the localized string from your fa.yaml file.
-		reply = r.translator.T("success_plan_created", plan.Name, escapedID)
+		reply = r.translator.T("success_plan_created", plan.Name, plan.ID)
 	}
 
 	// 3. Send the message with the MarkdownV2 ParseMode enabled.
