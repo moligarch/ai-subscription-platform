@@ -2,14 +2,20 @@ package usecase
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/infra/i18n"
 	"telegram-ai-subscription/internal/infra/logging"
 	"telegram-ai-subscription/internal/infra/metrics"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 )
@@ -24,6 +30,10 @@ type UserUseCase interface {
 	Count(ctx context.Context) (int, error)
 	CountInactiveSince(ctx context.Context, since time.Time) (int, error)
 	ToggleMessageStorage(ctx context.Context, tgID int64) error
+	ProcessRegistrationStep(ctx context.Context, tgID int64, messageText, phoneNumber string) (reply string, markup *adapter.ReplyMarkup, err error)
+	CompleteRegistration(ctx context.Context, tgID int64) error
+	ClearRegistrationState(ctx context.Context, tgID int64) error
+	StartRegistration(ctx context.Context, tgID int64) error
 }
 
 type userUC struct {
@@ -94,7 +104,12 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 			return err
 		}
 		metrics.IncUsersRegistered()
-
+		// Start the registration flow for the new user
+		initialState := &repository.RegistrationState{Step: repository.StateAwaitingFullName, Data: make(map[string]string)}
+		if err := u.regState.SetState(ctx, tgID, initialState); err != nil {
+			// Log the error but don't fail the transaction
+			u.log.Error().Err(err).Int64("tg_id", tgID).Msg("failed to set initial registration state")
+		}
 		user = nu
 		return nil
 	})
@@ -143,4 +158,106 @@ func (u *userUC) ToggleMessageStorage(ctx context.Context, tgID int64) error {
 		}
 		return nil
 	})
+}
+
+// ProcessRegistrationStep is the core of the conversational state machine.
+func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messageText, phoneNumber string) (reply string, markup *adapter.ReplyMarkup, err error) {
+	state, err := u.regState.GetState(ctx, tgID)
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			// This case is for when /start is hit by a pending user whose state expired.
+			// The bot handler will re-trigger the start flow.
+			return u.translator.T("reg_start", ""), nil, nil
+		}
+		return u.translator.T("reg_state_expired"), nil, nil
+	}
+
+	switch state.Step {
+	case repository.StateAwaitingFullName:
+		if strings.TrimSpace(messageText) == "" {
+			return "لطفا نام و نام خانوادگی معتبری وارد کنید.", nil, nil
+		}
+		state.Data["full_name"] = messageText
+		state.Step = repository.StateAwaitingPhone
+		if err := u.regState.SetState(ctx, tgID, state); err != nil {
+			return "", nil, err
+		}
+		// Ask for phone number with a "Share Contact" button
+		contactMarkup := &adapter.ReplyMarkup{
+			Buttons:    [][]adapter.Button{{{Text: "ارسال شماره تماس", RequestContact: true}}},
+			IsInline:   false, // This is a Reply Keyboard, not Inline
+			IsOneTime:  true,  // The keyboard will disappear after the user taps it
+			IsPersonal: true,
+		}
+		return "متشکرم. لطفا شماره تماس خود را با استفاده از دکمه زیر ارسال کنید.", contactMarkup, nil
+
+	case repository.StateAwaitingPhone:
+		if phoneNumber == "" {
+			return "لطفا از دکمه «ارسال شماره تماس» برای ارسال شماره خود استفاده کنید.", nil, nil
+		}
+		// Save the collected data to the database
+		err := u.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+			user, err := u.users.FindByTelegramID(ctx, tx, tgID)
+			if err != nil {
+				return err
+			}
+			user.FullName = state.Data["full_name"]
+			user.PhoneNumber = phoneNumber
+			return u.users.Save(ctx, tx, user)
+		})
+		if err != nil {
+			return "", nil, err
+		}
+
+		state.Step = repository.StateAwaitingVerification
+		if err := u.regState.SetState(ctx, tgID, state); err != nil {
+			return "", nil, err
+		}
+
+		// Show the final verification prompt
+		reply := fmt.Sprintf("اطلاعات شما:\nنام: %s\nشماره تماس: %s\n\nلطفا قوانین را مطالعه و اطلاعات خود را تایید کنید.", state.Data["full_name"], phoneNumber)
+		verifyMarkup := &adapter.ReplyMarkup{
+			Buttons: [][]adapter.Button{
+				{{Text: "✅ تایید و تکمیل ثبت نام", Data: "reg:verify"}},
+				{{Text: "📜 مطالعه قوانین", Data: "reg:policy"}},
+				{{Text: "❌ انصراف", Data: "reg:cancel"}},
+			},
+			IsInline: true,
+		}
+		return reply, verifyMarkup, nil
+	}
+
+	return "مرحله ثبت نام نامشخص است. لطفا با /start مجددا شروع کنید.", nil, nil
+}
+
+// CompleteRegistration finalizes the user's registration.
+func (u *userUC) CompleteRegistration(ctx context.Context, tgID int64) error {
+	err := u.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
+		user, err := u.users.FindByTelegramID(ctx, tx, tgID)
+		if err != nil {
+			return err
+		}
+		user.RegistrationStatus = model.RegistrationStatusCompleted
+		return u.users.Save(ctx, tx, user)
+	})
+	if err != nil {
+		return err
+	}
+
+	// Clean up the temporary state from Redis
+	return u.regState.ClearState(ctx, tgID)
+}
+
+// ClearRegistrationState removes a user's pending registration state from Redis.
+func (u *userUC) ClearRegistrationState(ctx context.Context, tgID int64) error {
+	return u.regState.ClearState(ctx, tgID)
+}
+
+// StartRegistration explicitly sets the initial state for the registration flow.
+func (u *userUC) StartRegistration(ctx context.Context, tgID int64) error {
+	initialState := &repository.RegistrationState{
+		Step: repository.StateAwaitingFullName,
+		Data: make(map[string]string),
+	}
+	return u.regState.SetState(ctx, tgID, initialState)
 }
