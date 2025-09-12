@@ -2,7 +2,6 @@
 package ai
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"strings"
@@ -120,16 +119,4 @@ func toOpenAIMessages(msgs []adapter.Message) []openai.ChatCompletionMessagePara
 		}
 	}
 	return out
-}
-
-// (Optional) generic word counter if you want a pure-length precheck:
-// keeps here as a utility others can reuse.
-func countWords(s string) int {
-	sc := bufio.NewScanner(strings.NewReader(s))
-	sc.Split(bufio.ScanWords)
-	n := 0
-	for sc.Scan() {
-		n++
-	}
-	return n
 }
