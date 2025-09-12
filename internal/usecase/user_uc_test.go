@@ -249,7 +249,7 @@ func TestUserUseCase_RegistrationFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcessRegistrationStep (full name) failed: %v", err)
 		}
-		if !strings.Contains(reply, "متشکرم") {
+		if !strings.Contains(reply, "موبایل") {
 			t.Errorf("Expected phone prompt, but got: %s", reply)
 		}
 		if markup == nil || markup.IsInline || !markup.Buttons[0][0].RequestContact {
@@ -270,7 +270,7 @@ func TestUserUseCase_RegistrationFlow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcessRegistrationStep (phone) failed: %v", err)
 		}
-		if !strings.Contains(reply, "اطلاعات شما") {
+		if !strings.Contains(reply, "ممنون از شما") {
 			t.Errorf("Expected verification prompt, but got: %s", reply)
 		}
 		if markup == nil || !markup.IsInline || len(markup.Buttons) != 3 {

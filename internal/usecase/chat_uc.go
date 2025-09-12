@@ -42,6 +42,7 @@ type ChatUseCase interface {
 
 type chatUC struct {
 	sessions repository.ChatSessionRepository
+	users    repository.UserRepository
 	jobs     repository.AIJobRepository
 	ai       adapter.AIServiceAdapter
 	subs     SubscriptionUseCase
@@ -55,6 +56,7 @@ type chatUC struct {
 
 func NewChatUseCase(
 	sessions repository.ChatSessionRepository,
+	users repository.UserRepository,
 	jobs repository.AIJobRepository,
 	ai adapter.AIServiceAdapter,
 	subs SubscriptionUseCase,
@@ -64,7 +66,7 @@ func NewChatUseCase(
 	devMode bool,
 	prices repository.ModelPricingRepository,
 ) *chatUC {
-	return &chatUC{sessions: sessions, jobs: jobs, ai: ai, subs: subs, lock: locker, tm: tm, log: logger, devMode: devMode, prices: prices}
+	return &chatUC{sessions: sessions, users: users, jobs: jobs, ai: ai, subs: subs, lock: locker, tm: tm, log: logger, devMode: devMode, prices: prices}
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
@@ -147,10 +149,14 @@ func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage str
 			CreatedAt: time.Now(),
 		}
 
-		// Only link the message ID if it was actually saved
+		// If the message was NOT saved due to privacy settings,
+		// we carry the content in the job itself.
 		if wasSaved {
 			job.UserMessageID = &userMsg.ID
+		} else {
+			job.UserMessageContent = userMessage
 		}
+
 		if err := c.jobs.Save(ctx, tx, job); err != nil {
 			return err
 		}
@@ -163,22 +169,29 @@ func (c *chatUC) SendChatMessage(ctx context.Context, sessionID, userMessage str
 func (c *chatUC) EndChat(ctx context.Context, sessionID string) error {
 	defer logging.TraceDuration(c.log, "ChatUC.EndChat")()
 	s, err := c.sessions.FindByID(ctx, repository.NoTX, sessionID)
-	switch err {
-	case nil:
-		break
-	case domain.ErrNotFound:
-		return domain.ErrNotFound
-	default:
-		return domain.ErrOperationFailed
+	if err != nil {
+		switch err {
+		case domain.ErrNotFound:
+			return domain.ErrNotFound
+		default:
+			return domain.ErrOperationFailed
+		}
 	}
 
-	err = c.sessions.UpdateStatus(ctx, repository.NoTX, s.ID, model.ChatSessionFinished)
-	switch err {
-	case nil:
-		return nil
-	default:
-		return domain.ErrOperationFailed
+	user, err := c.users.FindByID(ctx, nil, s.UserID)
+	if err != nil {
+		c.log.Error().Err(err).Str("user_id", s.UserID).Msg("failed to find user during EndChat")
+		// Fallback to just updating status if user lookup fails
+		return c.sessions.UpdateStatus(ctx, repository.NoTX, s.ID, model.ChatSessionFinished)
 	}
+
+	// If the user has disabled storage, we delete the session entirely instead of just marking it as finished.
+	// This removes it from their history.
+	if !user.Privacy.AllowMessageStorage {
+		return c.sessions.Delete(ctx, repository.NoTX, s.ID)
+	}
+
+	return c.sessions.UpdateStatus(ctx, repository.NoTX, s.ID, model.ChatSessionFinished)
 }
 
 func (c *chatUC) FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error) {

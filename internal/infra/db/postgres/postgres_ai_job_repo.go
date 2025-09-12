@@ -34,8 +34,8 @@ func (r *aiJobRepo) Save(ctx context.Context, tx repository.Tx, job *model.AIJob
 	job.UpdatedAt = time.Now()
 
 	const q = `
-INSERT INTO ai_jobs (id, status, session_id, user_message_id, retries, last_error, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO ai_jobs (id, status, session_id, user_message_id, user_message_content, retries, last_error, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
   status = EXCLUDED.status,
   retries = EXCLUDED.retries,
@@ -43,7 +43,7 @@ ON CONFLICT (id) DO UPDATE SET
   updated_at = EXCLUDED.updated_at;`
 
 	_, err := execSQL(ctx, r.pool, tx, q,
-		job.ID, job.Status, job.SessionID, job.UserMessageID, job.Retries, job.LastError, job.CreatedAt, job.UpdatedAt)
+		job.ID, job.Status, job.SessionID, job.UserMessageID, job.UserMessageContent, job.Retries, job.LastError, job.CreatedAt, job.UpdatedAt)
 	return err
 }
 
@@ -53,19 +53,15 @@ func (r *aiJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJob, e
 	// Use the TransactionManager to handle Begin/Commit/Rollback automatically.
 	err := r.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
 		const fetchQuery = `
-SELECT id, status, session_id, user_message_id, retries, last_error, created_at, updated_at
+SELECT id, status, session_id, user_message_id, user_message_content, retries, last_error, created_at, updated_at
 FROM ai_jobs
 WHERE status = 'pending'
 ORDER BY created_at
 LIMIT 1
 FOR UPDATE SKIP LOCKED;`
 
-		// We can now use our pickRow helper inside the transaction
 		row, err := pickRow(ctx, r.pool, tx, fetchQuery)
 		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				return domain.ErrNotFound // Return the specific error to stop the transaction wrapper
-			}
 			return err
 		}
 
@@ -73,33 +69,24 @@ FOR UPDATE SKIP LOCKED;`
 		var statusStr string
 		err = row.Scan(
 			&fetchedJob.ID, &statusStr, &fetchedJob.SessionID, &fetchedJob.UserMessageID,
-			&fetchedJob.Retries, &fetchedJob.LastError, &fetchedJob.CreatedAt, &fetchedJob.UpdatedAt,
+			&fetchedJob.UserMessageContent, &fetchedJob.Retries, &fetchedJob.LastError, &fetchedJob.CreatedAt, &fetchedJob.UpdatedAt,
 		)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.ErrNotFound // Translate driver error to our domain error
+				return domain.ErrNotFound
 			}
-			return domain.ErrReadDatabaseRow // For all other scan errors
+			return domain.ErrReadDatabaseRow
 		}
 		fetchedJob.Status = model.AIJobStatus(statusStr)
-
-		// Mark the job as processing so no one else picks it up
 		fetchedJob.Status = model.AIJobStatusProcessing
 		fetchedJob.UpdatedAt = time.Now()
 
-		// The existing Save method will correctly use the transaction context (tx)
 		if err := r.Save(ctx, tx, &fetchedJob); err != nil {
 			return err
 		}
-
-		job = &fetchedJob // Assign the result to the outer scope variable
+		job = &fetchedJob
 		return nil
 	})
-
-	// Handle the specific case where no rows were found
-	if errors.Is(err, domain.ErrNotFound) {
-		return nil, domain.ErrNotFound
-	}
 
 	return job, err
 }

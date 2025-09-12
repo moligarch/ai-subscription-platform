@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
@@ -253,7 +254,7 @@ func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *u
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error) {
@@ -1248,9 +1249,14 @@ func newTestLogger() *zerolog.Logger {
 func newTestTranslator() *i18n.Translator {
 	// Create a minimal, in-memory virtual filesystem for the test translator.
 	// This ensures the test is self-contained and doesn't rely on real files.
+	faYaml :=
+		`reg_start: 'Welcome %s'
+reg_ask_for_verification: 'ممنون از شما، لطفا اطلاعات خود را تایید کنید.'
+reg_ask_for_phone: 'لطفا شماره موبایل خود را ارسال کنید.'`
+
 	testFS := fstest.MapFS{
 		"locales/fa.yaml": {
-			Data: []byte("reg_start: 'Welcome %s'"), // Minimal content to prevent parsing errors
+			Data: []byte(faYaml),
 		},
 		"locales/policy-fa.txt": {
 			Data: []byte("Test Policy"),

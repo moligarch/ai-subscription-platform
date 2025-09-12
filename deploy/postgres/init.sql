@@ -205,7 +205,8 @@ CREATE TABLE IF NOT EXISTS ai_jobs (
   id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
   status               TEXT         NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
   session_id           UUID         NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-  user_message_id      UUID         NULL REFERENCES chat_messages(id) ON DELETE CASCADE, -- This column is now NULLABLE
+  user_message_id      UUID         NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  user_message_content TEXT         NULL,
   retries              INTEGER      NOT NULL DEFAULT 0,
   last_error           TEXT,
   created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
