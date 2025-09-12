@@ -89,7 +89,7 @@ func main() {
 	rateLimiter := red.NewRateLimiter(redisClient)
 	chatCache := red.NewChatCache(redisClient, cfg.Redis.TTL)
 	locker := red.NewLocker(redisClient)
-	regStateRepo := red.NewRegistrationStateRepo(redisClient)
+	stateRepo := red.NewStateRepo(redisClient)
 
 	// ---- Postgres ----
 	pool, err := pg.TryConnect(ctx, cfg.Database.URL, int32(cfg.Database.PoolMaxConns), 30*time.Second)
@@ -130,6 +130,7 @@ func main() {
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	notifLogRepo := pg.NewNotificationLogRepo(pool)
+	activationCodeRepo := pg.NewActivationCodeRepo(pool)
 
 	providers := map[string]adapter.AIServiceAdapter{}
 
@@ -168,10 +169,10 @@ func main() {
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, chatRepo, regStateRepo, translator, txManager, logger)
-	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
-	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
-	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
+	userUC := usecase.NewUserUseCase(userRepo, chatRepo, stateRepo, translator, txManager, logger)
+	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, activationCodeRepo, logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, activationCodeRepo, txManager, logger)
+	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, planRepo, priceRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev)
 
 	// Payment gateway + use case
 	zp, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)

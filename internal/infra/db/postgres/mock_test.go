@@ -87,4 +87,5 @@ func (m *mockRedisClient) Incr(ctx context.Context, key string) (int64, error) {
 func (m *mockRedisClient) Expire(ctx context.Context, key string, expiration time.Duration) error {
 	return m.ExpireFunc(ctx, key, expiration)
 }
-func (m *mockRedisClient) Close() error { return m.CloseFunc() }
+func (m *mockRedisClient) FlushDB(ctx context.Context) error { return nil }
+func (m *mockRedisClient) Close() error                      { return m.CloseFunc() }

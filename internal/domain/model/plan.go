@@ -11,12 +11,13 @@ import (
 // SubscriptionPlan represents a purchasable plan with a fixed duration,
 // credit allotment, and price in IRR.
 type SubscriptionPlan struct {
-	ID           string
-	Name         string
-	DurationDays int
-	Credits      int64
-	PriceIRR     int64
-	CreatedAt    time.Time
+	ID              string
+	Name            string
+	DurationDays    int
+	Credits         int64
+	PriceIRR        int64
+	SupportedModels []string
+	CreatedAt       time.Time
 }
 
 func (p *SubscriptionPlan) IsZero() bool { return p == nil || p.ID == "" }
@@ -30,11 +31,12 @@ func NewSubscriptionPlan(id, name string, durationDays int, credits int64, price
 		id = uuid.NewString()
 	}
 	return &SubscriptionPlan{
-		ID:           id,
-		Name:         name,
-		DurationDays: durationDays,
-		Credits:      credits,
-		PriceIRR:     priceIRR,
-		CreatedAt:    time.Now(),
+		ID:              id,
+		Name:            name,
+		DurationDays:    durationDays,
+		Credits:         credits,
+		PriceIRR:        priceIRR,
+		SupportedModels: []string{},
+		CreatedAt:       time.Now(),
 	}, nil
 }

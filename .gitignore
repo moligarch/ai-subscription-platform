@@ -1,4 +1,5 @@
 config.yaml
-**/_bak/
 .env
+changelog.md
+**/_bak/
 bin/

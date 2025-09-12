@@ -33,8 +33,7 @@ type ChatUseCase interface {
 	SendChatMessage(ctx context.Context, sessionID, userMessage string) (err error)
 	EndChat(ctx context.Context, sessionID string) error
 	FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error)
-	ListModels(ctx context.Context) ([]string, error)
-
+	ListModels(ctx context.Context, userID string) ([]string, error)
 	ListHistory(ctx context.Context, userID string, offset, limit int) ([]HistoryItem, error)
 	SwitchActiveSession(ctx context.Context, userID, sessionID string) error
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -43,11 +42,12 @@ type ChatUseCase interface {
 type chatUC struct {
 	sessions repository.ChatSessionRepository
 	users    repository.UserRepository
+	plans    repository.SubscriptionPlanRepository
+	prices   repository.ModelPricingRepository
 	jobs     repository.AIJobRepository
 	ai       adapter.AIServiceAdapter
 	subs     SubscriptionUseCase
 	devMode  bool
-	prices   repository.ModelPricingRepository
 
 	lock red.Locker
 	tm   repository.TransactionManager
@@ -57,6 +57,8 @@ type chatUC struct {
 func NewChatUseCase(
 	sessions repository.ChatSessionRepository,
 	users repository.UserRepository,
+	plans repository.SubscriptionPlanRepository,
+	prices repository.ModelPricingRepository,
 	jobs repository.AIJobRepository,
 	ai adapter.AIServiceAdapter,
 	subs SubscriptionUseCase,
@@ -64,9 +66,20 @@ func NewChatUseCase(
 	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 	devMode bool,
-	prices repository.ModelPricingRepository,
 ) *chatUC {
-	return &chatUC{sessions: sessions, users: users, jobs: jobs, ai: ai, subs: subs, lock: locker, tm: tm, log: logger, devMode: devMode, prices: prices}
+	return &chatUC{
+		sessions: sessions,
+		users:    users,
+		plans:    plans,
+		prices:   prices,
+		jobs:     jobs,
+		ai:       ai,
+		subs:     subs,
+		lock:     locker,
+		tm:       tm,
+		log:      logger,
+		devMode:  devMode,
+	}
 }
 
 func (c *chatUC) StartChat(ctx context.Context, userID, modelName string) (*model.ChatSession, error) {
@@ -199,22 +212,50 @@ func (c *chatUC) FindActiveSession(ctx context.Context, userID string) (*model.C
 	return c.sessions.FindActiveByUser(ctx, repository.NoTX, userID)
 }
 
-func (c *chatUC) ListModels(ctx context.Context) ([]string, error) {
+func (c *chatUC) ListModels(ctx context.Context, userID string) ([]string, error) {
 	defer logging.TraceDuration(c.log, "ChatUC.ListModels")()
 
-	rows, err := c.prices.ListActive(ctx, repository.NoTX)
-	if err != nil {
-		c.log.Error().Err(err).Msg("Failed to get active model price.")
-		return nil, err
+	// 1. Get the user's active subscription to find their plan.
+	activeSub, err := c.subs.GetActive(ctx, userID)
+	if err != nil || activeSub == nil {
+		// If the user has no active subscription, they have access to no models.
+		return []string{}, nil
 	}
-	out := make([]string, 0, len(rows))
-	for _, p := range rows {
-		// protect against empty names
-		if name := strings.TrimSpace(p.ModelName); name != "" {
-			out = append(out, name)
+
+	plan, err := c.plans.FindByID(ctx, repository.NoTX, activeSub.PlanID)
+	if err != nil || plan == nil {
+		// If the plan associated with the subscription can't be found, they have access to no models.
+		return []string{}, nil
+	}
+
+	// 2. Return the list of supported models directly from the plan.
+	// If the list is empty, an empty slice is correctly returned, granting access to no models.
+	if len(plan.SupportedModels) == 0 {
+		return []string{}, nil
+	}
+
+	// 3. To be safe, we still filter against all globally available models.
+	// This prevents showing a model in the menu if an admin has disabled it globally
+	// but forgot to remove it from a plan.
+	allActivePricings, err := c.prices.ListActive(ctx, repository.NoTX)
+	if err != nil {
+		c.log.Error().Err(err).Msg("Failed to get active model prices.")
+		return []string{}, err
+	}
+
+	supportedSet := make(map[string]struct{})
+	for _, m := range plan.SupportedModels {
+		supportedSet[m] = struct{}{}
+	}
+
+	filteredModels := make([]string, 0)
+	for _, pricing := range allActivePricings {
+		if _, isSupported := supportedSet[pricing.ModelName]; isSupported {
+			filteredModels = append(filteredModels, pricing.ModelName)
 		}
 	}
-	return out, nil
+
+	return filteredModels, nil
 }
 
 func (c *chatUC) ListHistory(ctx context.Context, userID string, offset, limit int) ([]HistoryItem, error) {

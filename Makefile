@@ -48,6 +48,10 @@ integration-test:
 	@echo "Running integration tests (requires Docker)..."
 	@go test -v -race -tags=integration ./...
 
+# Run the end-to-end database setup script.
+e2e-setup:
+	@echo "Setting up database for manual end-to-end testing..."
+	@go run ./cmd/e2e-setup/main.go --config ./config.yaml
 ## --------------------------------------
 ## Docker Compose Commands
 ## --------------------------------------
@@ -86,6 +90,7 @@ help:
 	@echo "  build-windows    - Build the application for Windows."
 	@echo "  test             - Run all unit tests."
 	@echo "  integration-test - Run all integration tests (requires Docker)."
+	@echo "  e2e-setup        - Run the end-to-end database setup script."
 	@echo "  docker-up        - Start all services with Docker Compose."
 	@echo "  docker-down      - Stop and remove all services and volumes."
 	@echo "  docker-run       - Start a specific service (e.g., 'make docker-run service=redis')."

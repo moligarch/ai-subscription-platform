@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
   duration_days  INTEGER      NOT NULL CHECK (duration_days > 0),
   credits        BIGINT       NOT NULL DEFAULT 0 CHECK (credits >= 0),
   price_irr      BIGINT       NOT NULL DEFAULT 0 CHECK (price_irr >= 0),
+  supported_models TEXT[]     NOT NULL DEFAULT '{}',
   created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -164,6 +165,23 @@ DO $$
   END IF;
 END$$;
 
+
+-- =============================================================
+-- ACTIVATION CODES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS activation_codes (
+  id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  code                 TEXT         NOT NULL UNIQUE,
+  plan_id              UUID         NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
+  is_redeemed          BOOLEAN      NOT NULL DEFAULT FALSE,
+  redeemed_by_user_id  UUID         NULL REFERENCES users(id) ON DELETE SET NULL,
+  redeemed_at          TIMESTAMPTZ  NULL,
+  created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  expires_at           TIMESTAMPTZ  NULL -- Optional expiry date for codes
+);
+
+CREATE INDEX IF NOT EXISTS idx_activation_codes_plan_id ON activation_codes(plan_id);
+CREATE INDEX IF NOT EXISTS idx_activation_codes_redeemed ON activation_codes(is_redeemed);
 
 -- =============================================================
 -- CHAT SESSIONS + MESSAGES

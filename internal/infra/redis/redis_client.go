@@ -16,6 +16,7 @@ type RedisClient interface {
 	Incr(ctx context.Context, key string) (int64, error)
 	Expire(ctx context.Context, key string, expiration time.Duration) error
 	Del(ctx context.Context, keys ...string) error
+	FlushDB(ctx context.Context) error
 	Close() error
 }
 
@@ -58,6 +59,10 @@ func (c *redClient) Expire(ctx context.Context, key string, expiration time.Dura
 
 func (c *redClient) Del(ctx context.Context, keys ...string) error {
 	return c.cli.Del(ctx, keys...).Err()
+}
+
+func (c *redClient) FlushDB(ctx context.Context) error {
+	return c.cli.FlushDB(ctx).Err()
 }
 
 func (c *redClient) Close() error { return c.cli.Close() }

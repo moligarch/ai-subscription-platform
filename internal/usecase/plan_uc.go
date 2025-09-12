@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
@@ -15,35 +16,43 @@ import (
 var _ PlanUseCase = (*planUC)(nil)
 
 type PlanUseCase interface {
-	Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error)
+	Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64, supportedModels []string) (*model.SubscriptionPlan, error)
 	Update(ctx context.Context, plan *model.SubscriptionPlan) error
 	List(ctx context.Context) ([]*model.SubscriptionPlan, error)
 	Get(ctx context.Context, id string) (*model.SubscriptionPlan, error)
 	Delete(ctx context.Context, id string) error
 	UpdatePricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error
+	GenerateActivationCodes(ctx context.Context, planID string, count int) ([]string, error)
 }
 
 type planUC struct {
 	plans  repository.SubscriptionPlanRepository
 	prices repository.ModelPricingRepository
+	codes  repository.ActivationCodeRepository
 	log    *zerolog.Logger
 }
 
-func NewPlanUseCase(plans repository.SubscriptionPlanRepository, prices repository.ModelPricingRepository, logger *zerolog.Logger) *planUC {
+func NewPlanUseCase(
+	plans repository.SubscriptionPlanRepository,
+	prices repository.ModelPricingRepository,
+	codes repository.ActivationCodeRepository,
+	logger *zerolog.Logger,
+) *planUC {
 	return &planUC{
 		plans:  plans,
 		prices: prices,
+		codes:  codes,
 		log:    logger,
 	}
 }
 
-func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error) {
-	sp := &model.SubscriptionPlan{
-		Name:         name,
-		DurationDays: durationDays,
-		Credits:      credits,
-		PriceIRR:     priceIRR,
+func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64, supportedModels []string) (*model.SubscriptionPlan, error) {
+	sp, err := model.NewSubscriptionPlan("", name, durationDays, credits, priceIRR)
+	if err != nil {
+		return nil, err
 	}
+	// Set the supported models from the arguments
+	sp.SupportedModels = supportedModels
 	if err := p.plans.Save(ctx, repository.NoTX, sp); err != nil {
 		return nil, err
 	}
@@ -88,4 +97,39 @@ func (p *planUC) UpdatePricing(ctx context.Context, modelName string, inputPrice
 
 	// The repo was refactored to use Create/Update.
 	return p.prices.Update(ctx, nil, pricing)
+}
+
+func (p *planUC) GenerateActivationCodes(ctx context.Context, planID string, count int) ([]string, error) {
+	// 1. Validate that the plan exists
+	plan, err := p.plans.FindByID(ctx, repository.NoTX, planID)
+	if err != nil {
+		return nil, domain.ErrPlanNotFound
+	}
+
+	if count <= 0 {
+		count = 1
+	}
+
+	generatedCodes := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		codeStr, err := generateActivationCode()
+		if err != nil {
+			return nil, domain.ErrOperationFailed
+		}
+
+		newCode := &model.ActivationCode{
+			Code:      codeStr,
+			PlanID:    plan.ID,
+			CreatedAt: time.Now(),
+		}
+
+		if err := p.codes.Save(ctx, repository.NoTX, newCode); err != nil {
+			// If we fail, return what we have so far, but log the error
+			p.log.Error().Err(err).Msg("failed to save activation code")
+			return generatedCodes, err
+		}
+		generatedCodes = append(generatedCodes, codeStr)
+	}
+
+	return generatedCodes, nil
 }

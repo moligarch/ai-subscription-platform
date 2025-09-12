@@ -32,15 +32,16 @@ func (r *planRepo) Save(ctx context.Context, tx repository.Tx, plan *model.Subsc
 		plan.ID = uuid.NewString()
 	}
 	const q = `
-INSERT INTO subscription_plans (id, name, duration_days, credits, price_irr, created_at)
-VALUES ($1, $2, $3, $4, $5, COALESCE($6, NOW()))
+INSERT INTO subscription_plans (id, name, duration_days, credits, price_irr, supported_models, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, NOW()))
 ON CONFLICT (id) DO UPDATE SET
   name = EXCLUDED.name,
   duration_days = EXCLUDED.duration_days,
   credits = EXCLUDED.credits,
-  price_irr = EXCLUDED.price_irr;`
+  price_irr = EXCLUDED.price_irr,
+  supported_models = EXCLUDED.supported_models;`
 
-	_, err := execSQL(ctx, r.pool, tx, q, plan.ID, plan.Name, plan.DurationDays, plan.Credits, plan.PriceIRR, plan.CreatedAt)
+	_, err := execSQL(ctx, r.pool, tx, q, plan.ID, plan.Name, plan.DurationDays, plan.Credits, plan.PriceIRR, plan.SupportedModels, plan.CreatedAt)
 	if err != nil {
 		if err == domain.ErrInvalidArgument || err == domain.ErrInvalidExecContext {
 			return err
@@ -90,7 +91,7 @@ SELECT COUNT(1)
 }
 
 func (r *planRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
-	const q = `SELECT id, name, duration_days, credits, price_irr, created_at FROM subscription_plans WHERE id = $1;`
+	const q = `SELECT id, name, duration_days, credits, price_irr, supported_models, created_at FROM subscription_plans WHERE id = $1;`
 
 	row, err := pickRow(ctx, r.pool, nil, q, id)
 	if err != nil {
@@ -98,7 +99,7 @@ func (r *planRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*
 	}
 
 	var p model.SubscriptionPlan
-	if err := row.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.SupportedModels, &p.CreatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrNotFound
 		}
@@ -108,7 +109,7 @@ func (r *planRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*
 }
 
 func (r *planRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
-	const q = `SELECT id, name, duration_days, credits, price_irr, created_at FROM subscription_plans ORDER BY created_at ASC;`
+	const q = `SELECT id, name, duration_days, credits, price_irr, supported_models, created_at FROM subscription_plans ORDER BY price_irr ASC;`
 	rows, err := queryRows(ctx, r.pool, tx, q)
 	if err != nil {
 		switch err {
@@ -123,7 +124,7 @@ func (r *planRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.Subs
 	var out []*model.SubscriptionPlan
 	for rows.Next() {
 		var p model.SubscriptionPlan
-		if err := rows.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.DurationDays, &p.Credits, &p.PriceIRR, &p.SupportedModels, &p.CreatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, domain.ErrNotFound
 			}

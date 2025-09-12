@@ -39,6 +39,27 @@ func cloneMessages(ms []*model.ChatMessage) []model.ChatMessage {
 	return out
 }
 
+// Helper function to compare two string slices for equality, ignoring order.
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aMap := make(map[string]int, len(a))
+	for _, x := range a {
+		aMap[x]++
+	}
+	for _, x := range b {
+		if _, ok := aMap[x]; !ok {
+			return false
+		}
+		aMap[x]--
+		if aMap[x] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // =============================
 // Adapters
 // =============================
@@ -323,7 +344,7 @@ func (r *MockPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *p
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
@@ -1123,25 +1144,25 @@ func (r *MockNotificationLogRepo) Exists(ctx context.Context, tx repository.Tx, 
 	return exists, nil
 }
 
-// ---- Mock RegistrationStateRepository ----
+// ---- Mock ConversationStateRepository ----
 
-// MockRegistrationStateRepo mocks the repository for registration state.
-type MockRegistrationStateRepo struct {
+// MockConversationStateRepo mocks the repository for registration state.
+type MockConversationStateRepo struct {
 	mu   sync.Mutex
-	data map[int64]*repository.RegistrationState
+	data map[int64]*repository.ConversationState
 
-	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.RegistrationState) error
-	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.RegistrationState, error)
+	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.ConversationState) error
+	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.ConversationState, error)
 	ClearStateFunc func(ctx context.Context, tgID int64) error
 }
 
-var _ repository.RegistrationStateRepository = (*MockRegistrationStateRepo)(nil)
+var _ repository.StateRepository = (*MockConversationStateRepo)(nil)
 
-func NewMockRegistrationStateRepo() *MockRegistrationStateRepo {
-	return &MockRegistrationStateRepo{data: make(map[int64]*repository.RegistrationState)}
+func NewMockConversationStateRepo() *MockConversationStateRepo {
+	return &MockConversationStateRepo{data: make(map[int64]*repository.ConversationState)}
 }
 
-func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.RegistrationState) error {
+func (m *MockConversationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.ConversationState) error {
 	if m.SetStateFunc != nil {
 		return m.SetStateFunc(ctx, tgID, state)
 	}
@@ -1151,7 +1172,7 @@ func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, st
 	return nil
 }
 
-func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.RegistrationState, error) {
+func (m *MockConversationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.ConversationState, error) {
 	if m.GetStateFunc != nil {
 		return m.GetStateFunc(ctx, tgID)
 	}
@@ -1163,7 +1184,7 @@ func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*
 	return nil, redis.Nil // Simulate key not found
 }
 
-func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) error {
+func (m *MockConversationStateRepo) ClearState(ctx context.Context, tgID int64) error {
 	if m.ClearStateFunc != nil {
 		return m.ClearStateFunc(ctx, tgID)
 	}
@@ -1171,6 +1192,48 @@ func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) 
 	defer m.mu.Unlock()
 	delete(m.data, tgID)
 	return nil
+}
+
+// ---- Mock ActivationCodeRepository ----
+type MockActivationCodeRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.ActivationCode
+
+	SaveFunc       func(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error
+	FindByCodeFunc func(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error)
+}
+
+var _ repository.ActivationCodeRepository = (*MockActivationCodeRepo)(nil)
+
+func NewMockActivationCodeRepo() *MockActivationCodeRepo {
+	return &MockActivationCodeRepo{data: make(map[string]*model.ActivationCode)}
+}
+
+func (r *MockActivationCodeRepo) Save(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, tx, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if code.ID == "" {
+		code.ID = uuid.NewString()
+	}
+	cp := *code
+	r.data[code.Code] = &cp
+	return nil
+}
+
+func (r *MockActivationCodeRepo) FindByCode(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error) {
+	if r.FindByCodeFunc != nil {
+		return r.FindByCodeFunc(ctx, tx, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.data[code]; ok && !c.IsRedeemed {
+		cp := *c
+		return &cp, nil
+	}
+	return nil, domain.ErrNotFound
 }
 
 // =============================
