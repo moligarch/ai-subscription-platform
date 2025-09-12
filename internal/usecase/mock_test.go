@@ -10,14 +10,15 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"testing/fstest"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4"
 	"github.com/rs/zerolog"
-	"gopkg.in/yaml.v2"
 
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
@@ -253,7 +254,7 @@ func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *u
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error) {
@@ -1140,10 +1141,6 @@ func NewMockRegistrationStateRepo() *MockRegistrationStateRepo {
 	return &MockRegistrationStateRepo{data: make(map[int64]*repository.RegistrationState)}
 }
 
-func (m *MockRegistrationStateRepo) makeKey(subscriptionID, kind string, thresholdDays int) string {
-	return fmt.Sprintf("%s:%s:%d", subscriptionID, kind, thresholdDays)
-}
-
 func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.RegistrationState) error {
 	if m.SetStateFunc != nil {
 		return m.SetStateFunc(ctx, tgID, state)
@@ -1248,28 +1245,26 @@ func newTestLogger() *zerolog.Logger {
 }
 
 // --- Mock Translator
-type mockTranslate struct {
-	translations map[string]string
-}
 
-func (t *mockTranslate) T(key string, args ...interface{}) string {
-	format, ok := t.translations[key]
-	if !ok {
-		return key
+func newTestTranslator() *i18n.Translator {
+	// Create a minimal, in-memory virtual filesystem for the test translator.
+	// This ensures the test is self-contained and doesn't rely on real files.
+	faYaml :=
+		`reg_start: 'Welcome %s'
+reg_ask_for_verification: 'ممنون از شما، لطفا اطلاعات خود را تایید کنید.'
+reg_ask_for_phone: 'لطفا شماره موبایل خود را ارسال کنید.'`
+
+	testFS := fstest.MapFS{
+		"locales/fa.yaml": {
+			Data: []byte(faYaml),
+		},
+		"locales/policy-fa.txt": {
+			Data: []byte("Test Policy"),
+		},
 	}
-	if len(args) > 0 {
-		return fmt.Sprintf(format, args...)
-	}
-	return format
-}
 
-func newTestTranslator() i18n.Translator {
-	// We create a mock translator from a simple YAML string
-	// to avoid file IO in tests.
-	yamlData := "reg_start: 'Welcome %s'"
-	var translations map[string]string
-	_ = yaml.Unmarshal([]byte(yamlData), &translations)
-
-	mT := mockTranslate{translations: translations}
-	return &mT
+	// Now, call the real NewTranslator with our in-memory filesystem.
+	// We ignore the error because we control the test data and know it's valid.
+	translator, _ := i18n.NewTranslator(testFS, "fa")
+	return translator
 }

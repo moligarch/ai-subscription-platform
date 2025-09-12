@@ -3,7 +3,6 @@ package usecase
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -40,7 +39,7 @@ type userUC struct {
 	users      repository.UserRepository
 	sessions   repository.ChatSessionRepository
 	regState   repository.RegistrationStateRepository
-	translator i18n.Translator
+	translator *i18n.Translator
 	tm         repository.TransactionManager
 	log        *zerolog.Logger
 }
@@ -49,7 +48,7 @@ func NewUserUseCase(
 	users repository.UserRepository,
 	sessions repository.ChatSessionRepository,
 	regState repository.RegistrationStateRepository,
-	translator i18n.Translator,
+	translator *i18n.Translator,
 	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 ) *userUC {
@@ -174,28 +173,38 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 
 	switch state.Step {
 	case repository.StateAwaitingFullName:
-		if strings.TrimSpace(messageText) == "" {
-			return "لطفا نام و نام خانوادگی معتبری وارد کنید.", nil, nil
+		// --- THE REFINEMENT ---
+		// Validate that the user sent non-empty, plain text.
+		if strings.TrimSpace(messageText) == "" || phoneNumber != "" {
+			return u.translator.T("reg_invalid_fullname"), nil, nil
 		}
+
 		state.Data["full_name"] = messageText
 		state.Step = repository.StateAwaitingPhone
 		if err := u.regState.SetState(ctx, tgID, state); err != nil {
 			return "", nil, err
 		}
-		// Ask for phone number with a "Share Contact" button
+
 		contactMarkup := &adapter.ReplyMarkup{
-			Buttons:    [][]adapter.Button{{{Text: "ارسال شماره تماس", RequestContact: true}}},
-			IsInline:   false, // This is a Reply Keyboard, not Inline
-			IsOneTime:  true,  // The keyboard will disappear after the user taps it
+			Buttons:    [][]adapter.Button{{{Text: u.translator.T("button_share_contact"), RequestContact: true}}},
+			IsInline:   false,
+			IsOneTime:  true,
 			IsPersonal: true,
 		}
-		return "متشکرم. لطفا شماره تماس خود را با استفاده از دکمه زیر ارسال کنید.", contactMarkup, nil
+		return u.translator.T("reg_ask_for_phone"), contactMarkup, nil
 
 	case repository.StateAwaitingPhone:
+		// Validate that the user sent their contact info and not plain text.
 		if phoneNumber == "" {
-			return "لطفا از دکمه «ارسال شماره تماس» برای ارسال شماره خود استفاده کنید.", nil, nil
+			contactMarkup := &adapter.ReplyMarkup{
+				Buttons:    [][]adapter.Button{{{Text: u.translator.T("button_share_contact"), RequestContact: true}}},
+				IsInline:   false,
+				IsOneTime:  true,
+				IsPersonal: true,
+			}
+			return u.translator.T("reg_invalid_phone"), contactMarkup, nil
 		}
-		// Save the collected data to the database
+
 		err := u.tm.WithTx(ctx, pgx.TxOptions{}, func(ctx context.Context, tx repository.Tx) error {
 			user, err := u.users.FindByTelegramID(ctx, tx, tgID)
 			if err != nil {
@@ -214,13 +223,12 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 			return "", nil, err
 		}
 
-		// Show the final verification prompt
-		reply := fmt.Sprintf("اطلاعات شما:\nنام: %s\nشماره تماس: %s\n\nلطفا قوانین را مطالعه و اطلاعات خود را تایید کنید.", state.Data["full_name"], phoneNumber)
+		reply := u.translator.T("reg_ask_for_verification", state.Data["full_name"], phoneNumber)
 		verifyMarkup := &adapter.ReplyMarkup{
 			Buttons: [][]adapter.Button{
-				{{Text: "✅ تایید و تکمیل ثبت نام", Data: "reg:verify"}},
-				{{Text: "📜 مطالعه قوانین", Data: "reg:policy"}},
-				{{Text: "❌ انصراف", Data: "reg:cancel"}},
+				{{Text: u.translator.T("button_verify_reg"), Data: "reg:verify"}},
+				{{Text: u.translator.T("button_read_policy"), Data: "reg:policy"}},
+				{{Text: u.translator.T("button_cancel_reg"), Data: "reg:cancel"}},
 			},
 			IsInline: true,
 		}

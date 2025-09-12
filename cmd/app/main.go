@@ -69,7 +69,7 @@ func main() {
 	}
 
 	// ---- Localization ----
-	translator, err := i18n.NewTranslator("fa")
+	translator, err := i18n.NewTranslator(i18n.LocalesFS, "fa")
 	if err != nil {
 		logger.Fatal().Err(err).Msg("failed to load translations")
 	}
@@ -171,7 +171,7 @@ func main() {
 	userUC := usecase.NewUserUseCase(userRepo, chatRepo, regStateRepo, translator, txManager, logger)
 	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
-	chatUC := usecase.NewChatUseCase(chatRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
+	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev, priceRepo)
 
 	// Payment gateway + use case
 	zp, err := payAdapters.NewZarinPalGateway(cfg.Payment.ZarinPal.MerchantID, cfg.Payment.ZarinPal.CallbackURL, cfg.Payment.ZarinPal.Sandbox)

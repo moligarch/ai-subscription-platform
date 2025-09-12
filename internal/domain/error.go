@@ -20,6 +20,8 @@ var (
 
 	ErrPlanNotFound      = errors.New("plan not found")
 	ErrModelNotAvailable = errors.New("the selected model is not available for use")
+
+	ErrAIJobWithNoMessage = errors.New("cannot process job with no message content")
 )
 
 // Chat related error

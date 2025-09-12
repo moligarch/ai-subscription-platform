@@ -277,7 +277,7 @@ func (r *RealTelegramBotAdapter) registrationCBRoute(ctx context.Context, id int
 		}
 		return r.SendMessage(ctx, adapter.SendMessageParams{
 			ChatID:      id,
-			Text:        r.translator.T("policy_text"),
+			Text:        r.translator.Policy(),
 			ParseMode:   tgbotapi.ModeMarkdownV2,
 			ReplyMarkup: &markup,
 		}) // Localized

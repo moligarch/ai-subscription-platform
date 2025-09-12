@@ -117,11 +117,21 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 		return domain.ErrNoActiveSubscription
 	}
 
-	// Create adapter messages from session history
+	// Build the message history for the AI.
 	msgs := session.GetRecentMessages(15)
-	adapterMsgs := make([]adapter.Message, 0, len(msgs))
+	adapterMsgs := make([]adapter.Message, 0, len(msgs)+1)
 	for _, m := range msgs {
 		adapterMsgs = append(adapterMsgs, adapter.Message{Role: m.Role, Content: m.Content})
+	}
+	// If the job carried its own content (because it wasn't saved), append it now.
+	// This ensures the AI always receives the user's latest message.
+	if job.UserMessageContent != "" {
+		adapterMsgs = append(adapterMsgs, adapter.Message{Role: "user", Content: job.UserMessageContent})
+	}
+
+	// If after all that, we still have no messages, something is wrong.
+	if len(adapterMsgs) == 0 {
+		return domain.ErrAIJobWithNoMessage
 	}
 
 	// Pre-check tokens and cost

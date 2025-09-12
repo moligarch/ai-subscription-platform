@@ -24,6 +24,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 		// --- Arrange ---
 		mockChatRepo := NewMockChatSessionRepo()
 		mockPricingRepo := NewMockModelPricingRepo()
+		mockUserRepo := NewMockUserRepo()
 		mockAIJobRepo := NewMockAIJobRepo()
 		mockLocker := NewMockLocker()
 
@@ -44,7 +45,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 			return nil
 		}
 
-		uc := usecase.NewChatUseCase(mockChatRepo, mockAIJobRepo, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+		uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
 
 		// --- Act ---
 		session, err := uc.StartChat(ctx, "user-1", "test-model")
@@ -78,7 +79,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 		mockChatRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error) {
 			return &model.ChatSession{Status: model.ChatSessionActive}, nil
 		}
-		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
 
 		// --- Act ---
 		_, err := uc.StartChat(ctx, "user-1", "test-model")
@@ -103,7 +104,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 			return nil, domain.ErrNotFound
 		}
 
-		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
 
 		// --- Act ---
 		_, err := uc.StartChat(ctx, "user-1", "unpriced-model")
@@ -132,6 +133,7 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 		// --- Arrange ---
 		mockChatRepo := NewMockChatSessionRepo()
 		mockAIJobRepo := NewMockAIJobRepo()
+		mockUserRepo := NewMockUserRepo()
 		mockLocker := NewMockLocker()
 
 		// Simulate finding an active chat session
@@ -157,7 +159,7 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 			return fn(ctx, nil)
 		}
 
-		uc := usecase.NewChatUseCase(mockChatRepo, mockAIJobRepo, nil, subUC, mockLocker, mockTxManager, testLogger, false, nil)
+		uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, subUC, mockLocker, mockTxManager, testLogger, false, nil)
 
 		// --- Act ---
 		err := uc.SendChatMessage(ctx, "sess-1", "Hello AI")
@@ -302,10 +304,11 @@ func TestChatUseCase_SessionManagement(t *testing.T) {
 // Helper function to reduce boilerplate in chat_uc_test.go
 func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRepo) {
 	mockChatRepo := NewMockChatSessionRepo()
+	mockUserRepo := NewMockUserRepo()
 	mockAIJobRepo := NewMockAIJobRepo()
 	mockPricingRepo := NewMockModelPricingRepo()
-	mockSubRepo := NewMockSubscriptionRepo() // For the real SubscriptionUseCase
-	mockPlanRepo := NewMockPlanRepo()        // For the real SubscriptionUseCase
+	mockSubRepo := NewMockSubscriptionRepo()
+	mockPlanRepo := NewMockPlanRepo()
 	mockTxManager := NewMockTxManager()
 	testLogger := newTestLogger()
 
@@ -313,6 +316,6 @@ func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRep
 	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
 
 	// Construct the ChatUseCase with its mocks
-	uc := usecase.NewChatUseCase(mockChatRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false, mockPricingRepo)
+	uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false, mockPricingRepo)
 	return uc, mockChatRepo, mockAIJobRepo
 }

@@ -12,12 +12,13 @@ const (
 )
 
 type AIJob struct {
-	ID            string
-	Status        AIJobStatus
-	SessionID     string
-	UserMessageID *string
-	Retries       int
-	LastError     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID                 string
+	Status             AIJobStatus
+	SessionID          string
+	UserMessageID      *string
+	UserMessageContent string
+	Retries            int
+	LastError          string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
