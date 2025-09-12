@@ -56,6 +56,10 @@ func (r *RealTelegramBotAdapter) cbPrefixRoutes() []prefixCB {
 			Prefix: "reg:",
 			Fn:     r.registrationCBRoute,
 		},
+		{
+			Prefix: "view_plan:",
+			Fn:     r.viewPlanCBRoute,
+		},
 	}
 }
 
@@ -297,4 +301,47 @@ func (r *RealTelegramBotAdapter) registrationCBRoute(ctx context.Context, id int
 			ParseMode: tgbotapi.ModeMarkdownV2,
 		}) // Localized
 	}
+}
+
+func (r *RealTelegramBotAdapter) viewPlanCBRoute(ctx context.Context, chatID int64, data string) error {
+	planID := strings.TrimPrefix(data, "view_plan:")
+
+	plan, err := r.facade.PlanUC.Get(ctx, planID)
+	if err != nil {
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("error_generic")})
+	}
+
+	// Build the detailed message body
+	header := r.translator.T("plan_details_header", plan.Name)
+
+	modelsStr := r.translator.T("plan_details_all_models")
+	if len(plan.SupportedModels) > 0 {
+		modelsStr = "• `" + strings.Join(plan.SupportedModels, "`\n• `") + "`"
+	}
+
+	body := r.translator.T("plan_details_body",
+		plan.DurationDays,
+		formatIRR(plan.PriceIRR),
+		plan.Credits,
+		modelsStr,
+	)
+
+	fullMessage := fmt.Sprintf("%s\n\n%s", header, body)
+
+	// Build the new purchase option buttons
+	markup := adapter.ReplyMarkup{
+		Buttons: [][]adapter.Button{
+			{{Text: r.translator.T("button_buy_gateway"), Data: "buy:" + plan.ID}},
+			{{Text: r.translator.T("button_buy_code"), Data: "code:" + plan.ID}},
+			{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}},
+		},
+		IsInline: true,
+	}
+
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:      chatID,
+		Text:        fullMessage,
+		ParseMode:   tgbotapi.ModeMarkdownV2,
+		ReplyMarkup: &markup,
+	})
 }

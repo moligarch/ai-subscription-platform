@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"telegram-ai-subscription/internal/domain"
+	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
 )
 
@@ -68,14 +69,12 @@ func (b *BotFacade) HandlePlans(ctx context.Context, tgID int64) (string, error)
 }
 
 // HandleCreatePlan creates a new plan (admin).
-// NOTE: your PlanUC.Create has signature: Create(ctx, name string, durationDays int, credits int, priceIRR int64) (string, error)
-func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationDays int, credits int64) (string, error) {
-	const priceIRR int64 = 1000 // dev price; adjust or pass from admin command parsing later
-	planUC, err := b.PlanUC.Create(ctx, name, durationDays, credits, priceIRR)
+func (b *BotFacade) HandleCreatePlan(ctx context.Context, name string, durationDays int, credits, priceIRR int64, supportedModels []string) (*model.SubscriptionPlan, error) {
+	plan, err := b.PlanUC.Create(ctx, name, durationDays, credits, priceIRR, supportedModels)
 	if err != nil {
-		return "", fmt.Errorf("create plan: %w", err)
+		return nil, fmt.Errorf("create plan: %w", err)
 	}
-	return fmt.Sprintf("Plan %q created with id %s", name, planUC.ID), nil
+	return plan, nil
 }
 
 // HandleUpdatePlan updates an existing plan (admin).
@@ -235,18 +234,21 @@ func (b *BotFacade) HandleStartChat(ctx context.Context, tgID int64, modelName s
 	if err != nil {
 		return "", fmt.Errorf("user not found: %w", err)
 	}
+
+	models, err := b.ChatUC.ListModels(ctx, user.ID)
+	if err != nil {
+		return "", fmt.Errorf("list models: %w", err)
+	}
+
 	if modelName == "" {
-		if b.ChatUC != nil {
-			models, err := b.ChatUC.ListModels(ctx)
-			if err == nil && len(models) > 0 {
-				modelName = models[0]
-			} else {
-				modelName = "gpt-4o-mini"
-			}
+		if len(models) > 0 {
+			modelName = models[0]
 		} else {
-			modelName = "gpt-4o-mini"
+			// This user's plan supports no models.
+			return "Your current plan does not support any active AI models.", nil
 		}
 	}
+
 	if _, err := b.ChatUC.StartChat(ctx, user.ID, modelName); err != nil {
 		if errors.Is(err, domain.ErrActiveChatExists) {
 			return "You already have an active chat. Please end it with /bye before starting a new one.", nil

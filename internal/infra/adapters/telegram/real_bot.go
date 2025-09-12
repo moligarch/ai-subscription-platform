@@ -241,9 +241,8 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	if err != nil {
 		r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("failed to register or fetch user")
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    tgUser.ID,
-			Text:      r.translator.T("error_generic"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: tgUser.ID,
+			Text:   r.translator.T("error_generic"),
 		})
 	}
 
@@ -287,9 +286,8 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 		} else if !allowed {
 			metrics.IncRateLimitTriggered()
 			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    chatID,
-				Text:      r.translator.T("rate_limit_exceeded"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
+				ChatID: chatID,
+				Text:   r.translator.T("rate_limit_exceeded"),
 			})
 		}
 	}
@@ -356,9 +354,8 @@ func (r *RealTelegramBotAdapter) handleQuery(ctx context.Context, query *tgbotap
 		if allowed, err := r.rateLimiter.Allow(ctx, red.UserCommandKey(chatID, "cb:"+data), 30, time.Minute); err == nil && !allowed {
 			metrics.IncRateLimitTriggered()
 			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    chatID,
-				Text:      r.translator.T("rate_limit_exceeded"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
+				ChatID: chatID,
+				Text:   r.translator.T("rate_limit_exceeded"),
 			})
 		}
 	}
@@ -410,22 +407,21 @@ func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID i
 	plans, err := r.facade.PlanUC.List(ctx)
 	if err != nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    telegramID,
-			Text:      r.translator.T("error_generic"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: telegramID,
+			Text:   r.translator.T("error_generic"),
 		}) // Localized
 	}
 	if len(plans) == 0 {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    telegramID,
-			Text:      r.translator.T("no_plan_header"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: telegramID,
+			Text:   r.translator.T("no_plan_header"),
 		}) // Localized
 	}
+
 	rows := make([][]adapter.Button, 0, len(plans)+1)
 	for _, p := range plans {
 		label := fmt.Sprintf("%s — %s / %d روز", p.Name, formatIRR(p.PriceIRR), p.DurationDays)
-		rows = append(rows, []adapter.Button{{Text: label, Data: "buy:" + p.ID}})
+		rows = append(rows, []adapter.Button{{Text: label, Data: "view_plan:" + p.ID}})
 	}
 	rows = append(rows, []adapter.Button{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}})
 
@@ -433,7 +429,6 @@ func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID i
 	return r.SendMessage(ctx, adapter.SendMessageParams{
 		ChatID:      telegramID,
 		Text:        r.translator.T("plans_header"),
-		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	})
 	// Localized
@@ -441,7 +436,12 @@ func (r *RealTelegramBotAdapter) sendPlansMenu(ctx context.Context, telegramID i
 
 // sendModelMenu shows available models as buttons.
 func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID int64) error {
-	models, _ := r.facade.ChatUC.ListModels(ctx)
+	user, err := r.userRepo.FindByTelegramID(ctx, repository.NoTX, telegramID)
+	if err != nil {
+		return fmt.Errorf("user not found: %w", err)
+	}
+
+	models, _ := r.facade.ChatUC.ListModels(ctx, user.ID)
 	if len(models) == 0 {
 		models = nil
 	}
