@@ -5,6 +5,8 @@ package usecase_test
 import (
 	"context"
 	"errors"
+	"reflect"
+	"sort"
 	"testing"
 
 	"telegram-ai-subscription/internal/domain"
@@ -22,18 +24,12 @@ func TestChatUseCase_StartChat(t *testing.T) {
 
 	t.Run("should start a new chat successfully", func(t *testing.T) {
 		// --- Arrange ---
-		mockChatRepo := NewMockChatSessionRepo()
-		mockPricingRepo := NewMockModelPricingRepo()
-		mockUserRepo := NewMockUserRepo()
-		mockAIJobRepo := NewMockAIJobRepo()
-		mockLocker := NewMockLocker()
+		uc, mockChatRepo, _, _, mockPricingRepo := setupChatUCTestWithMocks()
 
 		// Simulate that pricing IS found for this model
 		mockPricingRepo.GetByModelNameFunc = func(ctx context.Context, modelName string) (*model.ModelPricing, error) {
-			mp := model.ModelPricing{ModelName: modelName, Active: true}
-			return &mp, nil
+			return &model.ModelPricing{ModelName: modelName, Active: true}, nil
 		}
-
 		// Simulate that no active chat is found
 		mockChatRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error) {
 			return nil, domain.ErrNotFound
@@ -44,8 +40,6 @@ func TestChatUseCase_StartChat(t *testing.T) {
 			savedSession = s
 			return nil
 		}
-
-		uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
 
 		// --- Act ---
 		session, err := uc.StartChat(ctx, "user-1", "test-model")
@@ -79,7 +73,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 		mockChatRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.ChatSession, error) {
 			return &model.ChatSession{Status: model.ChatSessionActive}, nil
 		}
-		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, mockPricingRepo, nil, nil, nil, mockLocker, mockTxManager, testLogger, false)
 
 		// --- Act ---
 		_, err := uc.StartChat(ctx, "user-1", "test-model")
@@ -104,7 +98,7 @@ func TestChatUseCase_StartChat(t *testing.T) {
 			return nil, domain.ErrNotFound
 		}
 
-		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, nil, nil, mockLocker, mockTxManager, testLogger, false, mockPricingRepo)
+		uc := usecase.NewChatUseCase(mockChatRepo, nil, nil, mockPricingRepo, nil, nil, nil, mockLocker, mockTxManager, testLogger, false)
 
 		// --- Act ---
 		_, err := uc.StartChat(ctx, "user-1", "unpriced-model")
@@ -159,7 +153,7 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 			return fn(ctx, nil)
 		}
 
-		uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, subUC, mockLocker, mockTxManager, testLogger, false, nil)
+		uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, nil, nil, mockAIJobRepo, nil, subUC, mockLocker, mockTxManager, testLogger, false)
 
 		// --- Act ---
 		err := uc.SendChatMessage(ctx, "sess-1", "Hello AI")
@@ -301,6 +295,84 @@ func TestChatUseCase_SessionManagement(t *testing.T) {
 	})
 }
 
+func TestChatUseCase_ListModels(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("should return empty list if user has no active subscription", func(t *testing.T) {
+		// --- Arrange ---
+		uc, _, mockSubRepo, _, _ := setupChatUCTestWithMocks()
+		// CORRECT: We configure the underlying mock repository.
+		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
+			return nil, domain.ErrNotFound
+		}
+
+		// --- Act ---
+		models, err := uc.ListModels(ctx, "user-with-no-sub")
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if len(models) != 0 {
+			t.Errorf("expected an empty list of models, but got %d", len(models))
+		}
+	})
+
+	t.Run("should return empty list if plan's supported list is empty", func(t *testing.T) {
+		// --- Arrange ---
+		uc, _, mockSubRepo, mockPlanRepo, _ := setupChatUCTestWithMocks()
+		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
+			return &model.UserSubscription{PlanID: "empty-plan"}, nil
+		}
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+			return &model.SubscriptionPlan{SupportedModels: []string{}}, nil // Plan has an empty list
+		}
+
+		// --- Act ---
+		models, err := uc.ListModels(ctx, "user-1")
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if len(models) != 0 {
+			t.Errorf("expected an empty list of models, but got %d", len(models))
+		}
+	})
+
+	t.Run("should return only models that are both supported by the plan and globally active", func(t *testing.T) {
+		// --- Arrange ---
+		uc, _, mockSubRepo, mockPlanRepo, mockPricingRepo := setupChatUCTestWithMocks()
+		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
+			return &model.UserSubscription{PlanID: "pro-plan"}, nil
+		}
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+			return &model.SubscriptionPlan{SupportedModels: []string{"gpt-4o", "disabled-model"}}, nil
+		}
+		mockPricingRepo.ListActiveFunc = func(ctx context.Context) ([]*model.ModelPricing, error) {
+			return []*model.ModelPricing{
+				{ModelName: "gpt-4o", Active: true},
+				{ModelName: "gemini-1.5-pro", Active: true},
+			}, nil
+		}
+
+		// --- Act ---
+		models, err := uc.ListModels(ctx, "user-1")
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		expected := []string{"gpt-4o"}
+		// Use a helper to compare slices since order doesn't matter
+		sort.Strings(models)
+		sort.Strings(expected)
+		if !reflect.DeepEqual(models, expected) {
+			t.Errorf("mismatch in filtered models, want: %v, got: %v", expected, models)
+		}
+	})
+}
+
 // Helper function to reduce boilerplate in chat_uc_test.go
 func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRepo) {
 	mockChatRepo := NewMockChatSessionRepo()
@@ -316,6 +388,37 @@ func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRep
 	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
 
 	// Construct the ChatUseCase with its mocks
-	uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false, mockPricingRepo)
+	uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, nil, mockPricingRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false)
 	return uc, mockChatRepo, mockAIJobRepo
+}
+
+// It returns the MOCKS that the use cases depend on, so tests can configure them.
+func setupChatUCTestWithMocks() (usecase.ChatUseCase, *MockChatSessionRepo, *MockSubscriptionRepo, *MockPlanRepo, *MockModelPricingRepo) {
+	mockChatRepo := NewMockChatSessionRepo()
+	mockAIJobRepo := NewMockAIJobRepo()
+	mockPricingRepo := NewMockModelPricingRepo()
+	mockSubRepo := NewMockSubscriptionRepo()
+	mockPlanRepo := NewMockPlanRepo()
+	mockUserRepo := NewMockUserRepo()
+	mockTxManager := NewMockTxManager()
+	testLogger := newTestLogger()
+
+	// Construct the REAL SubscriptionUseCase with its own mocks.
+	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+
+	// Construct the REAL ChatUseCase with its mocks and the real subUC.
+	uc := usecase.NewChatUseCase(
+		mockChatRepo,
+		mockUserRepo,
+		mockPlanRepo,
+		mockPricingRepo,
+		mockAIJobRepo,
+		nil, // AI adapter is not needed for these tests
+		subUC,
+		NewMockLocker(),
+		mockTxManager,
+		testLogger,
+		false,
+	)
+	return uc, mockChatRepo, mockSubRepo, mockPlanRepo, mockPricingRepo
 }

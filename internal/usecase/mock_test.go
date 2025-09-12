@@ -39,6 +39,27 @@ func cloneMessages(ms []*model.ChatMessage) []model.ChatMessage {
 	return out
 }
 
+// Helper function to compare two string slices for equality, ignoring order.
+func equalSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	aMap := make(map[string]int, len(a))
+	for _, x := range a {
+		aMap[x]++
+	}
+	for _, x := range b {
+		if _, ok := aMap[x]; !ok {
+			return false
+		}
+		aMap[x]--
+		if aMap[x] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // =============================
 // Adapters
 // =============================
@@ -323,7 +344,7 @@ func (r *MockPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *p
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
