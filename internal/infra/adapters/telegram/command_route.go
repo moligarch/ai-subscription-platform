@@ -181,24 +181,27 @@ func (r *RealTelegramBotAdapter) handleBuyCommand(ctx context.Context, message *
 			Text:   r.translator.T("usage_buy"),
 		}) // Localized
 	}
-	text, err := r.facade.HandleSubscribe(ctx, message.From.ID, planID)
+	text, url, err := r.facade.HandleSubscribe(ctx, message.From.ID, planID)
 	if err != nil {
-		text = r.translator.T("error_payment_init") // Localized
-	}
-	if url := extractFirstURL(text); url != "" {
-		markup := adapter.ReplyMarkup{
-			Buttons:  [][]adapter.Button{{{Text: r.translator.T("button_pay_now"), URL: url}}},
-			IsInline: true,
+		switch err {
+		case domain.ErrInvalidArgument, domain.ErrPlanNotFound:
+			text = r.translator.T("error_payment_no_plan")
+		case domain.ErrUserNotFound:
+			text = r.translator.T("error_user_not_found")
+		case domain.ErrAlreadyHasReserved:
+			text = r.translator.T("error_already_has_reserved")
+		default:
+			text = r.translator.T("error_payment_init")
 		}
-		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:      message.Chat.ID,
-			Text:        text,
-			ReplyMarkup: &markup,
-		}) // Localized
+	}
+	markup := adapter.ReplyMarkup{
+		Buttons:  [][]adapter.Button{{{Text: r.translator.T("button_pay_now"), URL: url}}},
+		IsInline: true,
 	}
 	return r.SendMessage(ctx, adapter.SendMessageParams{
-		ChatID: message.Chat.ID,
-		Text:   text,
+		ChatID:      message.Chat.ID,
+		Text:        text,
+		ReplyMarkup: &markup,
 	}) // Localized
 }
 

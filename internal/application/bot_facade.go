@@ -119,13 +119,17 @@ func (b *BotFacade) HandleDeletePlan(ctx context.Context, id string) (string, er
 
 // HandleSubscribe starts payment flow for a plan.
 // PaymentUC.Initiate signature in your code expects amount as STRING.
-func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planID string) (string, error) {
+func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planID string) (msg, url string, err error) {
 	if strings.TrimSpace(planID) == "" {
-		return "Usage: /buy <plan_id>", nil
+		msg, url = "", ""
+		err = domain.ErrInvalidArgument
+		return
 	}
 	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil {
-		return "No user found. Try /start first.", nil
+		msg, url = "", ""
+		err = domain.ErrUserNotFound
+		return
 	}
 
 	// Build payment description (optional)
@@ -139,22 +143,29 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 	meta := map[string]interface{}{
 		"user_tg": telegramID,
 	}
-	_, payURL, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
+	_, payUrl, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
 	if err != nil {
 		// Handle all known business errors with specific user-facing messages.
 		if errors.Is(err, domain.ErrAlreadyHasReserved) {
-			return "You already have a reserved subscription. You can purchase a new plan after it activates.", nil
+			msg, url = "", ""
+			err = domain.ErrAlreadyHasReserved
+			return
 		}
 		if errors.Is(err, domain.ErrPlanNotFound) {
-			return "The plan ID you provided is invalid. Please use /plans to see available plans.", nil
+			msg, url = "", ""
+			err = domain.ErrPlanNotFound
+			return
 		}
 		// For unexpected errors, return a generic message and log the details.
-		return "Failed to initiate payment. Please try again later.", nil
+		msg, url = "", ""
+		err = domain.ErrOperationFailed
+		return
 	}
 
-	msg := "Please complete your payment at: " + payURL + "\n" +
-		"After success you'll be redirected and your plan will activate."
-	return msg, nil
+	msg = "لطفا خرید خود را با کلیک بر روی لینک زیر تکمیل کنید. پس از تکمیل فرآیند، با /status می‌توانید اشتراک های فعال خود را مشاهده کنید."
+	url = payUrl
+	err = nil
+	return
 }
 
 // ReservedPlanInfo holds details for a single reserved plan.

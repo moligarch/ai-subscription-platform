@@ -539,19 +539,6 @@ func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID
 	}) // Localized
 }
 
-var httpURLRe = regexp.MustCompile(`https?:\/\/(?:[-\w]+\.)+[a-zA-Z]{2,}(?:\/[^\s\\\n]*)`)
-
-func extractFirstURL(s string) string {
-	if s == "" {
-		return ""
-	}
-	loc := httpURLRe.FindStringIndex(s)
-	if loc == nil {
-		return ""
-	}
-	return s[loc[0]:loc[1]]
-}
-
 // simple IRR pretty printer; optional
 func formatIRR(v int64) string {
 	s := strconv.FormatInt(v, 10)
@@ -574,11 +561,11 @@ func formatIRR(v int64) string {
 }
 
 // It will safely escape any string for use in MarkdownV2.
-func (r *RealTelegramBotAdapter) escapeMarkdownV2(s string) string {
+func (r *RealTelegramBotAdapter) EscapeMarkdownV2(s string) string {
 	// List of all characters that must be escaped in MarkdownV2
 	replacer := strings.NewReplacer(
 		"_", "\\_" /*"*", "\\*", */, "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
-		"~", "\\~" /*, "`", "\\`"*/, ">", "\\>", "#", "\\#" /*"+", "\\+", */, "-", "\\-",
+		"~", "\\~" /*, "`", "\\`"*/, ">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
 		"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}", ".", "\\.", "!", "\\!",
 	)
 	return replacer.Replace(s)
