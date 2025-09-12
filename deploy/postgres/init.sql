@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS subscription_plans (
   duration_days  INTEGER      NOT NULL CHECK (duration_days > 0),
   credits        BIGINT       NOT NULL DEFAULT 0 CHECK (credits >= 0),
   price_irr      BIGINT       NOT NULL DEFAULT 0 CHECK (price_irr >= 0),
+  supported_models TEXT[]     NOT NULL DEFAULT '{}',
   created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
