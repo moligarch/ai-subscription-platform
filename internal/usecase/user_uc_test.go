@@ -24,7 +24,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		// Create the initial state
@@ -67,7 +67,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		const newTelegramID = 54321
@@ -100,7 +100,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 			return nil, expectedErr
 		}
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
 		// --- Act ---
@@ -142,7 +142,7 @@ func TestUserUseCase_ToggleMessageStorage(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 
 		user := &model.User{ID: "user-1", TelegramID: 123, Privacy: model.PrivacySettings{AllowMessageStorage: true}}
 		mockUserRepo.FindByTelegramIDFunc = func(ctx context.Context, tx repository.Tx, tgID int64) (*model.User, error) {
@@ -193,7 +193,7 @@ func TestUserUseCase_Counting(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 
 		// Configure the mock to return a specific count
 		mockUserRepo.CountInactiveUsersFunc = func(ctx context.Context, tx repository.Tx, olderThan time.Time) (int, error) {
@@ -225,7 +225,7 @@ func TestUserUseCase_RegistrationFlow(t *testing.T) {
 		// --- Arrange ---
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
-		mockRegStateRepo := NewMockRegistrationStateRepo()
+		mockRegStateRepo := NewMockConversationStateRepo()
 
 		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
 
@@ -258,7 +258,7 @@ func TestUserUseCase_RegistrationFlow(t *testing.T) {
 
 		// Verify state was updated in Redis
 		state, _ := mockRegStateRepo.GetState(ctx, tgID)
-		if state.Step != repository.StateAwaitingPhone {
+		if state.Step != usecase.StepAwaitPhone {
 			t.Errorf("Expected state to be 'awaiting_phone', but got '%s'", state.Step)
 		}
 		if state.Data["full_name"] != fullName {

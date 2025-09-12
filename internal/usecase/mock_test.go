@@ -1144,25 +1144,25 @@ func (r *MockNotificationLogRepo) Exists(ctx context.Context, tx repository.Tx, 
 	return exists, nil
 }
 
-// ---- Mock RegistrationStateRepository ----
+// ---- Mock ConversationStateRepository ----
 
-// MockRegistrationStateRepo mocks the repository for registration state.
-type MockRegistrationStateRepo struct {
+// MockConversationStateRepo mocks the repository for registration state.
+type MockConversationStateRepo struct {
 	mu   sync.Mutex
-	data map[int64]*repository.RegistrationState
+	data map[int64]*repository.ConversationState
 
-	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.RegistrationState) error
-	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.RegistrationState, error)
+	SetStateFunc   func(ctx context.Context, tgID int64, state *repository.ConversationState) error
+	GetStateFunc   func(ctx context.Context, tgID int64) (*repository.ConversationState, error)
 	ClearStateFunc func(ctx context.Context, tgID int64) error
 }
 
-var _ repository.RegistrationStateRepository = (*MockRegistrationStateRepo)(nil)
+var _ repository.StateRepository = (*MockConversationStateRepo)(nil)
 
-func NewMockRegistrationStateRepo() *MockRegistrationStateRepo {
-	return &MockRegistrationStateRepo{data: make(map[int64]*repository.RegistrationState)}
+func NewMockConversationStateRepo() *MockConversationStateRepo {
+	return &MockConversationStateRepo{data: make(map[int64]*repository.ConversationState)}
 }
 
-func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.RegistrationState) error {
+func (m *MockConversationStateRepo) SetState(ctx context.Context, tgID int64, state *repository.ConversationState) error {
 	if m.SetStateFunc != nil {
 		return m.SetStateFunc(ctx, tgID, state)
 	}
@@ -1172,7 +1172,7 @@ func (m *MockRegistrationStateRepo) SetState(ctx context.Context, tgID int64, st
 	return nil
 }
 
-func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.RegistrationState, error) {
+func (m *MockConversationStateRepo) GetState(ctx context.Context, tgID int64) (*repository.ConversationState, error) {
 	if m.GetStateFunc != nil {
 		return m.GetStateFunc(ctx, tgID)
 	}
@@ -1184,7 +1184,7 @@ func (m *MockRegistrationStateRepo) GetState(ctx context.Context, tgID int64) (*
 	return nil, redis.Nil // Simulate key not found
 }
 
-func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) error {
+func (m *MockConversationStateRepo) ClearState(ctx context.Context, tgID int64) error {
 	if m.ClearStateFunc != nil {
 		return m.ClearStateFunc(ctx, tgID)
 	}

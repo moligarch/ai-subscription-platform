@@ -19,6 +19,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
+// Define registration-specific Step constants here, where they belong.
+const (
+	StepAwaitFullName     = "awaiting_fullname"
+	StepAwaitPhone        = "awaiting_phone"
+	StepAwaitVerification = "awaiting_verification"
+)
+
 // Compile-time check
 var _ UserUseCase = (*userUC)(nil)
 
@@ -33,12 +40,15 @@ type UserUseCase interface {
 	CompleteRegistration(ctx context.Context, tgID int64) error
 	ClearRegistrationState(ctx context.Context, tgID int64) error
 	StartRegistration(ctx context.Context, tgID int64) error
+	SetConversationState(ctx context.Context, tgID int64, state *repository.ConversationState) error
+	GetConversationState(ctx context.Context, tgID int64) (*repository.ConversationState, error)
+	ClearConversationState(ctx context.Context, tgID int64) error
 }
 
 type userUC struct {
 	users      repository.UserRepository
 	sessions   repository.ChatSessionRepository
-	regState   repository.RegistrationStateRepository
+	stateRepo  repository.StateRepository
 	translator *i18n.Translator
 	tm         repository.TransactionManager
 	log        *zerolog.Logger
@@ -47,7 +57,7 @@ type userUC struct {
 func NewUserUseCase(
 	users repository.UserRepository,
 	sessions repository.ChatSessionRepository,
-	regState repository.RegistrationStateRepository,
+	stateRepo repository.StateRepository,
 	translator *i18n.Translator,
 	tm repository.TransactionManager,
 	logger *zerolog.Logger,
@@ -55,7 +65,7 @@ func NewUserUseCase(
 	return &userUC{
 		users:      users,
 		sessions:   sessions,
-		regState:   regState,
+		stateRepo:  stateRepo,
 		translator: translator,
 		tm:         tm,
 		log:        logger,
@@ -104,8 +114,8 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 		}
 		metrics.IncUsersRegistered()
 		// Start the registration flow for the new user
-		initialState := &repository.RegistrationState{Step: repository.StateAwaitingFullName, Data: make(map[string]string)}
-		if err := u.regState.SetState(ctx, tgID, initialState); err != nil {
+		initialState := &repository.ConversationState{Step: StepAwaitFullName, Data: make(map[string]string)}
+		if err := u.stateRepo.SetState(ctx, tgID, initialState); err != nil {
 			// Log the error but don't fail the transaction
 			u.log.Error().Err(err).Int64("tg_id", tgID).Msg("failed to set initial registration state")
 		}
@@ -161,7 +171,7 @@ func (u *userUC) ToggleMessageStorage(ctx context.Context, tgID int64) error {
 
 // ProcessRegistrationStep is the core of the conversational state machine.
 func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messageText, phoneNumber string) (reply string, markup *adapter.ReplyMarkup, err error) {
-	state, err := u.regState.GetState(ctx, tgID)
+	state, err := u.stateRepo.GetState(ctx, tgID)
 	if err != nil {
 		if errors.Is(err, redis.Nil) {
 			// This case is for when /start is hit by a pending user whose state expired.
@@ -172,7 +182,7 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 	}
 
 	switch state.Step {
-	case repository.StateAwaitingFullName:
+	case StepAwaitFullName:
 		// --- THE REFINEMENT ---
 		// Validate that the user sent non-empty, plain text.
 		if strings.TrimSpace(messageText) == "" || phoneNumber != "" {
@@ -180,8 +190,8 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 		}
 
 		state.Data["full_name"] = messageText
-		state.Step = repository.StateAwaitingPhone
-		if err := u.regState.SetState(ctx, tgID, state); err != nil {
+		state.Step = StepAwaitPhone
+		if err := u.stateRepo.SetState(ctx, tgID, state); err != nil {
 			return "", nil, err
 		}
 
@@ -193,7 +203,7 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 		}
 		return u.translator.T("reg_ask_for_phone"), contactMarkup, nil
 
-	case repository.StateAwaitingPhone:
+	case StepAwaitPhone:
 		// Validate that the user sent their contact info and not plain text.
 		if phoneNumber == "" {
 			contactMarkup := &adapter.ReplyMarkup{
@@ -218,8 +228,8 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 			return "", nil, err
 		}
 
-		state.Step = repository.StateAwaitingVerification
-		if err := u.regState.SetState(ctx, tgID, state); err != nil {
+		state.Step = StepAwaitVerification
+		if err := u.stateRepo.SetState(ctx, tgID, state); err != nil {
 			return "", nil, err
 		}
 
@@ -253,19 +263,33 @@ func (u *userUC) CompleteRegistration(ctx context.Context, tgID int64) error {
 	}
 
 	// Clean up the temporary state from Redis
-	return u.regState.ClearState(ctx, tgID)
+	return u.stateRepo.ClearState(ctx, tgID)
 }
 
 // ClearRegistrationState removes a user's pending registration state from Redis.
 func (u *userUC) ClearRegistrationState(ctx context.Context, tgID int64) error {
-	return u.regState.ClearState(ctx, tgID)
+	return u.stateRepo.ClearState(ctx, tgID)
 }
 
 // StartRegistration explicitly sets the initial state for the registration flow.
 func (u *userUC) StartRegistration(ctx context.Context, tgID int64) error {
-	initialState := &repository.RegistrationState{
-		Step: repository.StateAwaitingFullName,
+	initialState := &repository.ConversationState{
+		Step: StepAwaitFullName,
 		Data: make(map[string]string),
 	}
-	return u.regState.SetState(ctx, tgID, initialState)
+	return u.stateRepo.SetState(ctx, tgID, initialState)
+}
+
+// SetConversationState allows other parts of the application (like bot handlers)
+// to initiate a new conversational flow for a user.
+func (u *userUC) SetConversationState(ctx context.Context, tgID int64, state *repository.ConversationState) error {
+	return u.stateRepo.SetState(ctx, tgID, state)
+}
+
+func (u *userUC) GetConversationState(ctx context.Context, tgID int64) (*repository.ConversationState, error) {
+	return u.stateRepo.GetState(ctx, tgID)
+}
+
+func (u *userUC) ClearConversationState(ctx context.Context, tgID int64) error {
+	return u.stateRepo.ClearState(ctx, tgID)
 }

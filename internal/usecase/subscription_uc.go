@@ -16,6 +16,10 @@ import (
 	"telegram-ai-subscription/internal/infra/logging"
 )
 
+const (
+	StepAwaitingActivationCode = "awaiting_activation_code"
+)
+
 // Compile-time check
 var _ SubscriptionUseCase = (*subscriptionUC)(nil)
 
