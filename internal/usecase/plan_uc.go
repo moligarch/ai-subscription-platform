@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
@@ -21,18 +22,26 @@ type PlanUseCase interface {
 	Get(ctx context.Context, id string) (*model.SubscriptionPlan, error)
 	Delete(ctx context.Context, id string) error
 	UpdatePricing(ctx context.Context, modelName string, inputPrice, outputPrice int64) error
+	GenerateActivationCodes(ctx context.Context, planID string, count int) ([]string, error)
 }
 
 type planUC struct {
 	plans  repository.SubscriptionPlanRepository
 	prices repository.ModelPricingRepository
+	codes  repository.ActivationCodeRepository
 	log    *zerolog.Logger
 }
 
-func NewPlanUseCase(plans repository.SubscriptionPlanRepository, prices repository.ModelPricingRepository, logger *zerolog.Logger) *planUC {
+func NewPlanUseCase(
+	plans repository.SubscriptionPlanRepository,
+	prices repository.ModelPricingRepository,
+	codes repository.ActivationCodeRepository,
+	logger *zerolog.Logger,
+) *planUC {
 	return &planUC{
 		plans:  plans,
 		prices: prices,
+		codes:  codes,
 		log:    logger,
 	}
 }
@@ -88,4 +97,39 @@ func (p *planUC) UpdatePricing(ctx context.Context, modelName string, inputPrice
 
 	// The repo was refactored to use Create/Update.
 	return p.prices.Update(ctx, nil, pricing)
+}
+
+func (p *planUC) GenerateActivationCodes(ctx context.Context, planID string, count int) ([]string, error) {
+	// 1. Validate that the plan exists
+	plan, err := p.plans.FindByID(ctx, repository.NoTX, planID)
+	if err != nil {
+		return nil, domain.ErrPlanNotFound
+	}
+
+	if count <= 0 {
+		count = 1
+	}
+
+	generatedCodes := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		codeStr, err := generateActivationCode()
+		if err != nil {
+			return nil, err
+		}
+
+		newCode := &model.ActivationCode{
+			Code:      codeStr,
+			PlanID:    plan.ID,
+			CreatedAt: time.Now(),
+		}
+
+		if err := p.codes.Save(ctx, repository.NoTX, newCode); err != nil {
+			// If we fail, return what we have so far, but log the error
+			p.log.Error().Err(err).Msg("failed to save activation code")
+			return generatedCodes, err
+		}
+		generatedCodes = append(generatedCodes, codeStr)
+	}
+
+	return generatedCodes, nil
 }

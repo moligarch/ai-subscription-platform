@@ -117,11 +117,11 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 	ctx := context.Background()
 	testLogger := newTestLogger()
 	mockTxManager := NewMockTxManager()
-
+	mockCodeRepo := NewMockActivationCodeRepo()
 	mockSubRepo := NewMockSubscriptionRepo()
 	mockSubPlanRepo := NewMockPlanRepo()
 
-	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockSubPlanRepo, mockTxManager, testLogger)
+	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockSubPlanRepo, mockCodeRepo, mockTxManager, testLogger)
 
 	t.Run("should queue an AI job successfully", func(t *testing.T) {
 		// --- Arrange ---
@@ -377,6 +377,7 @@ func TestChatUseCase_ListModels(t *testing.T) {
 func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRepo) {
 	mockChatRepo := NewMockChatSessionRepo()
 	mockUserRepo := NewMockUserRepo()
+	mockCodeRepo := NewMockActivationCodeRepo()
 	mockAIJobRepo := NewMockAIJobRepo()
 	mockPricingRepo := NewMockModelPricingRepo()
 	mockSubRepo := NewMockSubscriptionRepo()
@@ -385,7 +386,7 @@ func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRep
 	testLogger := newTestLogger()
 
 	// Construct a real SubscriptionUseCase with its own mocks
-	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockCodeRepo, mockTxManager, testLogger)
 
 	// Construct the ChatUseCase with its mocks
 	uc := usecase.NewChatUseCase(mockChatRepo, mockUserRepo, nil, mockPricingRepo, mockAIJobRepo, nil, subUC, NewMockLocker(), mockTxManager, testLogger, false)
@@ -395,6 +396,7 @@ func setupChatUCTest() (usecase.ChatUseCase, *MockChatSessionRepo, *MockAIJobRep
 // It returns the MOCKS that the use cases depend on, so tests can configure them.
 func setupChatUCTestWithMocks() (usecase.ChatUseCase, *MockChatSessionRepo, *MockSubscriptionRepo, *MockPlanRepo, *MockModelPricingRepo) {
 	mockChatRepo := NewMockChatSessionRepo()
+	mockCodeRepo := NewMockActivationCodeRepo()
 	mockAIJobRepo := NewMockAIJobRepo()
 	mockPricingRepo := NewMockModelPricingRepo()
 	mockSubRepo := NewMockSubscriptionRepo()
@@ -404,7 +406,7 @@ func setupChatUCTestWithMocks() (usecase.ChatUseCase, *MockChatSessionRepo, *Moc
 	testLogger := newTestLogger()
 
 	// Construct the REAL SubscriptionUseCase with its own mocks.
-	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockCodeRepo, mockTxManager, testLogger)
 
 	// Construct the REAL ChatUseCase with its mocks and the real subUC.
 	uc := usecase.NewChatUseCase(

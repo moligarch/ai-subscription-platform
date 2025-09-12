@@ -9,6 +9,7 @@ import (
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/usecase"
 
 	"github.com/google/uuid"
@@ -22,7 +23,8 @@ func TestPlanUseCase(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
 		mockPricingRepo := NewMockModelPricingRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 
 		var savedPlan *model.SubscriptionPlan
 		mockPlanRepo.SaveFunc = func(ctx context.Context, p *model.SubscriptionPlan) error {
@@ -58,7 +60,8 @@ func TestPlanUseCase(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
 		mockPricingRepo := NewMockModelPricingRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 
 		// Seed the repo with an existing plan
 		existingPlan := &model.SubscriptionPlan{
@@ -94,7 +97,8 @@ func TestPlanUseCase(t *testing.T) {
 			// --- Arrange ---
 			mockPlanRepo := NewMockPlanRepo()
 			mockPricingRepo := NewMockModelPricingRepo()
-			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+			mockCodeRepo := NewMockActivationCodeRepo()
+			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 			idToDelete := uuid.NewString()
 			planToDelete := &model.SubscriptionPlan{ID: idToDelete}
 			mockPlanRepo.Save(ctx, nil, planToDelete)
@@ -122,7 +126,8 @@ func TestPlanUseCase(t *testing.T) {
 			}
 			// --- Arrange ---
 			mockPricingRepo := NewMockModelPricingRepo()
-			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+			mockCodeRepo := NewMockActivationCodeRepo()
+			uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 
 			// --- Act ---
 			err := uc.Delete(ctx, uuid.NewString())
@@ -141,7 +146,8 @@ func TestPlanUseCase(t *testing.T) {
 		// --- Arrange ---
 		mockPlanRepo := NewMockPlanRepo()
 		mockPricingRepo := NewMockModelPricingRepo()
-		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 
 		id1 := uuid.NewString()
 		id2 := uuid.NewString()
@@ -168,6 +174,83 @@ func TestPlanUseCase(t *testing.T) {
 		}
 		if len(allPlans) != 2 {
 			t.Errorf("expected List to return 2 plans, but got %d", len(allPlans))
+		}
+	})
+
+	t.Run("UpdatePricing should modify an existing model's prices", func(t *testing.T) {
+		// Arrange
+		mockPlanRepo := NewMockPlanRepo()
+		mockPricingRepo := NewMockModelPricingRepo()
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
+
+		existingPricing := &model.ModelPricing{ModelName: "gpt-4o", InputTokenPriceMicros: 100, OutputTokenPriceMicros: 200}
+		mockPricingRepo.Seed(existingPricing) // Seed the mock with our model
+
+		var updatedPricing *model.ModelPricing
+		mockPricingRepo.UpdateFunc = func(ctx context.Context, p *model.ModelPricing) error {
+			updatedPricing = p // Capture the updated model for assertion
+			return nil
+		}
+
+		// Act
+		err := uc.UpdatePricing(ctx, "gpt-4o", 150, 300)
+
+		// Assert
+		if err != nil {
+			t.Fatalf("expected no error, but got: %v", err)
+		}
+		if updatedPricing == nil {
+			t.Fatal("expected pricing repo Update to be called, but it wasn't")
+		}
+		if updatedPricing.InputTokenPriceMicros != 150 {
+			t.Errorf("expected input price to be 150, but got %d", updatedPricing.InputTokenPriceMicros)
+		}
+		if updatedPricing.OutputTokenPriceMicros != 300 {
+			t.Errorf("expected output price to be 300, but got %d", updatedPricing.OutputTokenPriceMicros)
+		}
+	})
+}
+
+func TestPlanUseCase_GenerateActivationCodes(t *testing.T) {
+	ctx := context.Background()
+	testLogger := newTestLogger()
+
+	t.Run("should generate the correct number of codes for a valid plan", func(t *testing.T) {
+		// --- Arrange ---
+		mockPlanRepo := NewMockPlanRepo()
+		mockPricingRepo := NewMockModelPricingRepo()
+		mockCodeRepo := NewMockActivationCodeRepo()
+
+		// Simulate finding a valid plan
+		plan := &model.SubscriptionPlan{ID: "plan-123"}
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+			return plan, nil
+		}
+
+		var savedCodes []*model.ActivationCode
+		mockCodeRepo.SaveFunc = func(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error {
+			savedCodes = append(savedCodes, code)
+			return nil
+		}
+
+		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
+
+		// --- Act ---
+		generated, err := uc.GenerateActivationCodes(ctx, "plan-123", 5)
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if len(generated) != 5 {
+			t.Errorf("expected 5 codes to be generated, but got %d", len(generated))
+		}
+		if len(savedCodes) != 5 {
+			t.Errorf("expected 5 codes to be saved, but got %d", len(savedCodes))
+		}
+		if savedCodes[0].PlanID != "plan-123" {
+			t.Error("generated codes are not linked to the correct plan ID")
 		}
 	})
 }

@@ -130,6 +130,7 @@ func main() {
 	chatRepo := pg.NewChatSessionRepo(pool, chatCache, enc)
 
 	notifLogRepo := pg.NewNotificationLogRepo(pool)
+	activationCodeRepo := pg.NewActivationCodeRepo(pool)
 
 	providers := map[string]adapter.AIServiceAdapter{}
 
@@ -169,8 +170,8 @@ func main() {
 
 	// ---- Use Cases ----
 	userUC := usecase.NewUserUseCase(userRepo, chatRepo, regStateRepo, translator, txManager, logger)
-	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, logger)
-	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, txManager, logger)
+	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, activationCodeRepo, logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, activationCodeRepo, txManager, logger)
 	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, planRepo, priceRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev)
 
 	// Payment gateway + use case

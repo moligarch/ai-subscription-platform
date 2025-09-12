@@ -25,25 +25,28 @@ type SubscriptionUseCase interface {
 	GetReserved(ctx context.Context, userID string) ([]*model.UserSubscription, error)
 	DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error)
 	FinishExpired(ctx context.Context) (int, error)
+	RedeemActivationCode(ctx context.Context, userID, code string) (*model.UserSubscription, error)
 }
 
 type subscriptionUC struct {
 	subs  repository.SubscriptionRepository
 	plans repository.SubscriptionPlanRepository
-
-	tm  repository.TransactionManager
-	log *zerolog.Logger
+	codes repository.ActivationCodeRepository
+	tm    repository.TransactionManager
+	log   *zerolog.Logger
 }
 
 func NewSubscriptionUseCase(
 	subs repository.SubscriptionRepository,
 	plans repository.SubscriptionPlanRepository,
+	codes repository.ActivationCodeRepository,
 	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 ) *subscriptionUC {
 	return &subscriptionUC{
 		subs:  subs,
 		plans: plans,
+		codes: codes,
 		tm:    tm,
 		log:   logger,
 	}
@@ -159,4 +162,42 @@ func (u *subscriptionUC) FinishExpired(ctx context.Context) (int, error) {
 		count++
 	}
 	return count, nil
+}
+
+func (u *subscriptionUC) RedeemActivationCode(ctx context.Context, userID, code string) (*model.UserSubscription, error) {
+	defer logging.TraceDuration(u.log, "SubscriptionUC.RedeemActivationCode")()
+	var grantedSub *model.UserSubscription
+
+	// The entire redemption process must be atomic
+	err := u.tm.WithTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(ctx context.Context, tx repository.Tx) error {
+		// 1. Find the code. The repository method already ensures it's unredeemed.
+		ac, err := u.codes.FindByCode(ctx, tx, code)
+		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				return domain.ErrCodeNotFound // Use a more specific domain error
+			}
+			return err
+		}
+
+		// 2. Grant the subscription by calling our existing, trusted Subscribe method.
+		// This correctly handles the logic for active vs. reserved plans.
+		sub, err := u.Subscribe(ctx, userID, ac.PlanID)
+		if err != nil {
+			return err
+		}
+
+		// 3. Mark the code as redeemed to prevent reuse.
+		now := time.Now()
+		ac.IsRedeemed = true
+		ac.RedeemedByUserID = &userID
+		ac.RedeemedAt = &now
+		if err := u.codes.Save(ctx, tx, ac); err != nil {
+			return err
+		}
+
+		grantedSub = sub
+		return nil
+	})
+
+	return grantedSub, err
 }

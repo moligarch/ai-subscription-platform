@@ -1194,6 +1194,48 @@ func (m *MockRegistrationStateRepo) ClearState(ctx context.Context, tgID int64) 
 	return nil
 }
 
+// ---- Mock ActivationCodeRepository ----
+type MockActivationCodeRepo struct {
+	mu   sync.Mutex
+	data map[string]*model.ActivationCode
+
+	SaveFunc       func(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error
+	FindByCodeFunc func(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error)
+}
+
+var _ repository.ActivationCodeRepository = (*MockActivationCodeRepo)(nil)
+
+func NewMockActivationCodeRepo() *MockActivationCodeRepo {
+	return &MockActivationCodeRepo{data: make(map[string]*model.ActivationCode)}
+}
+
+func (r *MockActivationCodeRepo) Save(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error {
+	if r.SaveFunc != nil {
+		return r.SaveFunc(ctx, tx, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if code.ID == "" {
+		code.ID = uuid.NewString()
+	}
+	cp := *code
+	r.data[code.Code] = &cp
+	return nil
+}
+
+func (r *MockActivationCodeRepo) FindByCode(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error) {
+	if r.FindByCodeFunc != nil {
+		return r.FindByCodeFunc(ctx, tx, code)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.data[code]; ok && !c.IsRedeemed {
+		cp := *c
+		return &cp, nil
+	}
+	return nil, domain.ErrNotFound
+}
+
 // =============================
 // Infra helpers for tests
 // =============================

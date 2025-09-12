@@ -17,7 +17,7 @@ import (
 func TestSubscriptionUseCase_Subscribe(t *testing.T) {
 	ctx := context.Background()
 	testLogger := newTestLogger()
-	mockTxManager := NewMockTxManager() // Use the mock transaction manager
+	mockTxManager := NewMockTxManager()
 
 	// Shared plan for tests
 	plan := &model.SubscriptionPlan{
@@ -31,6 +31,7 @@ func TestSubscriptionUseCase_Subscribe(t *testing.T) {
 		// --- Arrange ---
 		mockSubRepo := NewMockSubscriptionRepo()
 		mockPlanRepo := NewMockPlanRepo()
+		mockCodeRepo := NewMockActivationCodeRepo() // <-- Add new mock
 		mockPlanRepo.Save(ctx, nil, plan)
 
 		var savedSub *model.UserSubscription
@@ -43,7 +44,7 @@ func TestSubscriptionUseCase_Subscribe(t *testing.T) {
 			return nil, domain.ErrNotFound
 		}
 
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockCodeRepo, mockTxManager, testLogger) // <-- Update constructor
 
 		// --- Act ---
 		_, err := uc.Subscribe(ctx, "user-123", "plan-pro")
@@ -67,6 +68,7 @@ func TestSubscriptionUseCase_Subscribe(t *testing.T) {
 		// --- Arrange ---
 		mockSubRepo := NewMockSubscriptionRepo()
 		mockPlanRepo := NewMockPlanRepo()
+		mockCodeRepo := NewMockActivationCodeRepo() // <-- Add new mock
 		mockPlanRepo.Save(ctx, nil, plan)
 
 		var savedSub *model.UserSubscription
@@ -82,7 +84,7 @@ func TestSubscriptionUseCase_Subscribe(t *testing.T) {
 			return activeSub, nil
 		}
 
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockTxManager, testLogger)
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockCodeRepo, mockTxManager, testLogger) // <-- Update constructor
 
 		// --- Act ---
 		_, err := uc.Subscribe(ctx, "user-123", "plan-pro")
@@ -111,7 +113,8 @@ func TestSubscriptionUseCase_DeductCredits(t *testing.T) {
 	t.Run("should deduct credits from an active subscription", func(t *testing.T) {
 		// --- Arrange ---
 		mockSubRepo := NewMockSubscriptionRepo()
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockTxManager, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockCodeRepo, mockTxManager, testLogger)
 
 		activeSub := &model.UserSubscription{ID: "sub-1", UserID: "user-1", Status: model.SubscriptionStatusActive, RemainingCredits: 1000}
 		mockSubRepo.Save(ctx, nil, activeSub)
@@ -143,7 +146,8 @@ func TestSubscriptionUseCase_DeductCredits(t *testing.T) {
 	t.Run("should finish subscription if exact credits are deducted", func(t *testing.T) {
 		// --- Arrange ---
 		mockSubRepo := NewMockSubscriptionRepo()
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockTxManager, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockCodeRepo, mockTxManager, testLogger)
 
 		activeSub := &model.UserSubscription{ID: "sub-1", UserID: "user-1", Status: model.SubscriptionStatusActive, RemainingCredits: 100}
 		mockSubRepo.Save(ctx, nil, activeSub)
@@ -176,7 +180,8 @@ func TestSubscriptionUseCase_DeductCredits(t *testing.T) {
 		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
 			return nil, domain.ErrNotFound
 		}
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockTxManager, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockCodeRepo, mockTxManager, testLogger)
 
 		// --- Act ---
 		_, err := uc.DeductCredits(ctx, "user-1", 100)
@@ -215,8 +220,8 @@ func TestSubscriptionUseCase_FinishExpired(t *testing.T) {
 			savedSubs = append(savedSubs, s)
 			return nil
 		}
-
-		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockTxManager, testLogger)
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockCodeRepo, mockTxManager, testLogger)
 
 		// --- Act ---
 		count, err := uc.FinishExpired(ctx)
@@ -236,6 +241,76 @@ func TestSubscriptionUseCase_FinishExpired(t *testing.T) {
 		}
 		if savedSubs[0].Status != model.SubscriptionStatusFinished {
 			t.Errorf("expected expired subscription status to be 'finished', but got '%s'", savedSubs[0].Status)
+		}
+	})
+}
+
+func TestSubscriptionUseCase_RedeemActivationCode(t *testing.T) {
+	ctx := context.Background()
+	testLogger := newTestLogger()
+	mockTxManager := NewMockTxManager()
+
+	t.Run("should redeem a valid code and grant a subscription", func(t *testing.T) {
+		// --- Arrange ---
+		mockSubRepo := NewMockSubscriptionRepo()
+		mockPlanRepo := NewMockPlanRepo()
+		mockCodeRepo := NewMockActivationCodeRepo()
+
+		// Simulate finding a valid, unredeemed code
+		code := &model.ActivationCode{ID: "code-1", Code: "VALID-CODE", PlanID: "plan-1"}
+		mockCodeRepo.FindByCodeFunc = func(ctx context.Context, tx repository.Tx, c string) (*model.ActivationCode, error) {
+			return code, nil
+		}
+
+		var savedCode *model.ActivationCode
+		mockCodeRepo.SaveFunc = func(ctx context.Context, tx repository.Tx, c *model.ActivationCode) error {
+			savedCode = c
+			return nil
+		}
+
+		// Simulate subscription granting
+		mockSubRepo.SaveFunc = func(ctx context.Context, tx repository.Tx, s *model.UserSubscription) error {
+			return nil
+		}
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+			return &model.SubscriptionPlan{ID: id, DurationDays: 30}, nil
+		}
+
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, mockPlanRepo, mockCodeRepo, mockTxManager, testLogger)
+
+		// --- Act ---
+		_, err := uc.RedeemActivationCode(ctx, "user-1", "VALID-CODE")
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got %v", err)
+		}
+		if savedCode == nil {
+			t.Fatal("expected the activation code to be saved (updated)")
+		}
+		if !savedCode.IsRedeemed {
+			t.Error("expected code to be marked as redeemed")
+		}
+		if savedCode.RedeemedByUserID == nil || *savedCode.RedeemedByUserID != "user-1" {
+			t.Error("code was not marked as redeemed by the correct user")
+		}
+	})
+
+	t.Run("should fail to redeem a non-existent code", func(t *testing.T) {
+		// --- Arrange ---
+		mockCodeRepo := NewMockActivationCodeRepo()
+		// Simulate that the code is not found
+		mockCodeRepo.FindByCodeFunc = func(ctx context.Context, tx repository.Tx, c string) (*model.ActivationCode, error) {
+			return nil, domain.ErrNotFound
+		}
+		uc := usecase.NewSubscriptionUseCase(nil, nil, mockCodeRepo, mockTxManager, testLogger)
+
+		// --- Act ---
+		_, err := uc.RedeemActivationCode(ctx, "user-1", "INVALID-CODE")
+
+		// --- Assert ---
+		if !errors.Is(err, domain.ErrCodeNotFound) {
+			t.Errorf("expected ErrCodeNotFound, but got %v", err)
 		}
 	})
 }

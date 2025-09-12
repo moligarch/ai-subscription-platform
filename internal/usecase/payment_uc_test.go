@@ -23,8 +23,7 @@ type paymentUCTestDeps struct {
 	purchases *MockPurchaseRepo
 	gateway   *MockPaymentGateway
 	tm        *MockTxManager
-	// We need a mock for the SubscriptionUseCase interface itself for ConfirmAuto
-	subUC usecase.SubscriptionUseCase
+	subUC     usecase.SubscriptionUseCase
 }
 
 // newPaymentUCDeps creates a fresh set of mocks for each test run.
@@ -38,7 +37,8 @@ func newPaymentUCDeps() *paymentUCTestDeps {
 		tm:        NewMockTxManager(),
 	}
 	// The real SubscriptionUseCase needs its own mocks. We create it here.
-	deps.subUC = usecase.NewSubscriptionUseCase(deps.subs, deps.plans, deps.tm, newTestLogger())
+	mockCodeRepo := NewMockActivationCodeRepo()
+	deps.subUC = usecase.NewSubscriptionUseCase(deps.subs, deps.plans, mockCodeRepo, deps.tm, newTestLogger())
 	return deps
 }
 
