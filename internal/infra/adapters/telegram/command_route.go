@@ -514,13 +514,20 @@ func (r *RealTelegramBotAdapter) handleConversationalReply(ctx context.Context, 
 		_, err = r.facade.SubscriptionUC.RedeemActivationCode(ctx, user.ID, code)
 		if err != nil {
 			var errMsg string
-			if errors.Is(err, domain.ErrCodeNotFound) {
+			switch err {
+			case domain.ErrCodeNotFound:
 				errMsg = r.translator.T("error_code_not_found")
-			} else {
+			case domain.ErrAlreadyHasReserved:
+				errMsg = r.translator.T("error_already_has_reserved")
+			default:
 				r.log.Error().Err(err).Str("code", code).Msg("failed to redeem activation code")
 				errMsg = r.translator.T("error_code_redeem_failed")
 			}
-			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: errMsg})
+
+			return r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID: message.Chat.ID,
+				Text:   errMsg,
+			})
 		}
 		// On success, notify the user and show the main menu.
 		successMsg := r.translator.T("success_code_redeemed")

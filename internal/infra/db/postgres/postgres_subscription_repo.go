@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 
+	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 
@@ -32,10 +33,15 @@ ON CONFLICT (id) DO UPDATE SET
 
 	_, err := execSQL(ctx, r.pool, tx, q, s.ID, s.UserID, s.PlanID, s.CreatedAt, s.ScheduledStartAt, s.StartAt, s.ExpiresAt, s.RemainingCredits, s.Status)
 	if err != nil {
-		if err == domain.ErrInvalidArgument || err == domain.ErrInvalidExecContext {
+		switch err {
+		case domain.ErrInvalidArgument, domain.ErrInvalidExecContext:
 			return err
+		default:
+			if err.(*pgconn.PgError).Code == "23505" {
+				return domain.ErrAlreadyHasReserved
+			}
+			return domain.ErrOperationFailed
 		}
-		return domain.ErrOperationFailed
 	}
 	return nil
 }
