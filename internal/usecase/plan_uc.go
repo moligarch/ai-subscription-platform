@@ -15,7 +15,7 @@ import (
 var _ PlanUseCase = (*planUC)(nil)
 
 type PlanUseCase interface {
-	Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error)
+	Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64, supportedModels []string) (*model.SubscriptionPlan, error)
 	Update(ctx context.Context, plan *model.SubscriptionPlan) error
 	List(ctx context.Context) ([]*model.SubscriptionPlan, error)
 	Get(ctx context.Context, id string) (*model.SubscriptionPlan, error)
@@ -37,13 +37,13 @@ func NewPlanUseCase(plans repository.SubscriptionPlanRepository, prices reposito
 	}
 }
 
-func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64) (*model.SubscriptionPlan, error) {
-	sp := &model.SubscriptionPlan{
-		Name:         name,
-		DurationDays: durationDays,
-		Credits:      credits,
-		PriceIRR:     priceIRR,
+func (p *planUC) Create(ctx context.Context, name string, durationDays int, credits int64, priceIRR int64, supportedModels []string) (*model.SubscriptionPlan, error) {
+	sp, err := model.NewSubscriptionPlan("", name, durationDays, credits, priceIRR)
+	if err != nil {
+		return nil, err
 	}
+	// Set the supported models from the arguments
+	sp.SupportedModels = supportedModels
 	if err := p.plans.Save(ctx, repository.NoTX, sp); err != nil {
 		return nil, err
 	}
