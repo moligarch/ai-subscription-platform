@@ -7,6 +7,8 @@ import (
 	"strings"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/usecase"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -35,6 +37,10 @@ func (r *RealTelegramBotAdapter) cbPrefixRoutes() []prefixCB {
 		{
 			Prefix: "buy:",
 			Fn:     r.buyPrefixCBRoute,
+		},
+		{
+			Prefix: "code:",
+			Fn:     r.codePrefixCBRoute,
 		},
 		{
 			Prefix: "chat:",
@@ -159,8 +165,8 @@ func (r *RealTelegramBotAdapter) buyPrefixCBRoute(ctx context.Context, id int64,
 	}
 	if url := extractFirstURL(text); url != "" {
 		rows := [][]adapter.Button{
-			{{Text: r.translator.T("button_pay_now"), URL: url}},                    // Localized
-			{{Text: r.translator.T("callback_main_menu_button"), Data: "cmd:menu"}}, // Localized
+			{{Text: r.translator.T("button_pay_now"), URL: url}},       // Localized
+			{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}, // Localized
 		}
 		markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
 		return r.SendMessage(ctx, adapter.SendMessageParams{
@@ -197,9 +203,8 @@ func (r *RealTelegramBotAdapter) chatPrefixCBRoute(ctx context.Context, id int64
 		}
 	}
 	if err := r.SendMessage(ctx, adapter.SendMessageParams{
-		ChatID:    id,
-		Text:      text,
-		ParseMode: tgbotapi.ModeMarkdownV2,
+		ChatID: id,
+		Text:   text,
 	}); err != nil {
 		return err
 	}
@@ -264,9 +269,8 @@ func (r *RealTelegramBotAdapter) registrationCBRoute(ctx context.Context, id int
 		if err := r.facade.UserUC.CompleteRegistration(ctx, id); err != nil {
 			r.log.Error().Err(err).Int64("tg_id", id).Msg("failed to complete registration")
 			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    id,
-				Text:      r.translator.T("error_generic"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
+				ChatID: id,
+				Text:   r.translator.T("error_generic"),
 			}) // Localized
 		}
 		return r.sendMainMenu(ctx, id, r.translator.T("reg_success"))
@@ -282,23 +286,20 @@ func (r *RealTelegramBotAdapter) registrationCBRoute(ctx context.Context, id int
 		return r.SendMessage(ctx, adapter.SendMessageParams{
 			ChatID:      id,
 			Text:        r.translator.Policy(),
-			ParseMode:   tgbotapi.ModeMarkdownV2,
 			ReplyMarkup: &markup,
 		}) // Localized
 	case "cancel":
 		_ = r.facade.UserUC.ClearRegistrationState(ctx, id)
 		_ = r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("reg_cancelled"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("reg_cancelled"),
 		}) // Localized
 		return nil
 	default:
 		r.log.Warn().Int64("tg_id", id).Str("action", action).Msg("unknown registration callback action")
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_generic"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_generic"),
 		}) // Localized
 	}
 }
@@ -308,7 +309,10 @@ func (r *RealTelegramBotAdapter) viewPlanCBRoute(ctx context.Context, chatID int
 
 	plan, err := r.facade.PlanUC.Get(ctx, planID)
 	if err != nil {
-		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("error_generic")})
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: chatID,
+			Text:   r.translator.T("error_generic"),
+		}) // Localized
 	}
 
 	// Build the detailed message body
@@ -344,4 +348,28 @@ func (r *RealTelegramBotAdapter) viewPlanCBRoute(ctx context.Context, chatID int
 		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	})
+}
+
+// codePrefixCBRoute starts the conversational flow for redeeming an activation code.
+func (r *RealTelegramBotAdapter) codePrefixCBRoute(ctx context.Context, id int64, data string) error {
+	planID := strings.TrimPrefix(data, "code:")
+
+	// Create the state object using our new constant.
+	state := &repository.ConversationState{
+		Step: usecase.StepAwaitingActivationCode,
+		Data: map[string]string{"plan_id": planID},
+	}
+
+	if err := r.facade.UserUC.SetConversationState(ctx, id, state); err != nil {
+		r.log.Error().Err(err).Int64("tg_id", id).Msg("failed to set activation code state")
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: id,
+			Text:   r.translator.T("error_generic"),
+		}) // Localized
+	}
+
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID: id,
+		Text:   r.translator.T("prompt_enter_activation_code"),
+	}) // Localized
 }

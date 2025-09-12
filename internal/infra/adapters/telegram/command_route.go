@@ -11,7 +11,9 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/infra/metrics"
+	"telegram-ai-subscription/internal/usecase"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -35,6 +37,7 @@ func (r *RealTelegramBotAdapter) commandRoutes() map[string]commandHandler {
 		"delete_plan":    r.adminOnly(r.handleDeletePlanCommand),
 		"update_plan":    r.adminOnly(r.handleUpdatePlanCommand),
 		"update_pricing": r.adminOnly(r.handleUpdatePricingCommand),
+		"generate_code":  r.adminOnly(r.handleGenerateCodeCommand),
 	}
 }
 
@@ -58,11 +61,7 @@ func (r *RealTelegramBotAdapter) adminOnly(next commandHandler) commandHandler {
 func (r *RealTelegramBotAdapter) handleStartCommand(ctx context.Context, message *tgbotapi.Message) error {
 	user, err := r.facade.UserUC.RegisterOrFetch(ctx, message.From.ID, message.From.UserName)
 	if err != nil {
-		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    message.Chat.ID,
-			Text:      r.translator.T("error_generic"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
-		}) // Localized
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("error_generic")})
 	}
 
 	_, isAdmin := r.adminIDsMap[message.From.ID]
@@ -73,11 +72,7 @@ func (r *RealTelegramBotAdapter) handleStartCommand(ctx context.Context, message
 	if user.RegistrationStatus == model.RegistrationStatusPending {
 		// Explicitly start or restart the registration flow by setting the state.
 		if err := r.facade.UserUC.StartRegistration(ctx, user.TelegramID); err != nil {
-			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    message.Chat.ID,
-				Text:      r.translator.T("error_generic"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
-			}) // Localized
+			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("error_generic")})
 		}
 
 		// Greet the user and ask for their name.
@@ -85,11 +80,7 @@ func (r *RealTelegramBotAdapter) handleStartCommand(ctx context.Context, message
 		if message.From.LastName != "" {
 			accountName += " " + message.From.LastName
 		}
-		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    message.Chat.ID,
-			Text:      r.translator.T("reg_start", accountName),
-			ParseMode: tgbotapi.ModeMarkdownV2,
-		}) // Localized
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("reg_start", accountName)})
 	}
 
 	// For existing, completed users, just show the main menu.
@@ -269,9 +260,8 @@ func (r *RealTelegramBotAdapter) handleByeCommand(ctx context.Context, message *
 // handleHelpCommand provides a list of commands.
 func (r *RealTelegramBotAdapter) handleHelpCommand(ctx context.Context, message *tgbotapi.Message) error {
 	return r.SendMessage(ctx, adapter.SendMessageParams{
-		ChatID:    message.Chat.ID,
-		Text:      r.translator.T("help_message"),
-		ParseMode: tgbotapi.ModeMarkdownV2,
+		ChatID: message.Chat.ID,
+		Text:   r.translator.T("help_message"),
 	}) // Localized
 }
 
@@ -463,4 +453,81 @@ func (r *RealTelegramBotAdapter) handleUpdatePricingCommand(ctx context.Context,
 		Text:      text,
 		ParseMode: tgbotapi.ModeMarkdownV2,
 	}) // Localized
+}
+
+func (r *RealTelegramBotAdapter) handleGenerateCodeCommand(ctx context.Context, message *tgbotapi.Message) error {
+	args := strings.Fields(message.CommandArguments())
+	if len(args) < 1 {
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("usage_generate_code")})
+	}
+
+	planID := args[0]
+	count := 1 // Default to generating one code
+	if len(args) > 1 {
+		c, err := strconv.Atoi(args[1])
+		if err == nil && c > 0 {
+			count = c
+		}
+	}
+
+	codes, err := r.facade.HandleGenerateCodes(ctx, planID, count)
+	if err != nil {
+		if errors.Is(err, domain.ErrPlanNotFound) {
+			return r.SendMessage(ctx, adapter.SendMessageParams{
+				ChatID: message.Chat.ID,
+				Text:   r.translator.T("error_plan_not_found_for_code"),
+			}) // Localized
+		}
+		r.log.Error().Err(err).Msg("failed to generate activation codes")
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: message.Chat.ID,
+			Text:   r.translator.T("error_generic"),
+		}) // Localized
+	}
+
+	var b strings.Builder
+	b.WriteString(r.translator.T("success_codes_generated", len(codes), planID))
+	b.WriteString("`") // Start of Markdown code block
+	for _, code := range codes {
+		b.WriteString(code + "`\n")
+	}
+
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID:    message.Chat.ID,
+		Text:      b.String(),
+		ParseMode: tgbotapi.ModeMarkdownV2, // Use MarkdownV2 to render the code block
+	})
+}
+
+// handleConversationalReply processes messages from users who are in a specific, temporary conversational state.
+func (r *RealTelegramBotAdapter) handleConversationalReply(ctx context.Context, message *tgbotapi.Message, state *repository.ConversationState) error {
+	// Always clear the state after this interaction to prevent the user from getting stuck.
+	defer r.facade.UserUC.ClearConversationState(ctx, message.From.ID)
+
+	switch state.Step {
+	case usecase.StepAwaitingActivationCode:
+		code := strings.TrimSpace(message.Text)
+		user, err := r.facade.UserUC.GetByTelegramID(ctx, message.From.ID)
+		if err != nil || user == nil {
+			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("error_user_not_found")})
+		}
+		_, err = r.facade.SubscriptionUC.RedeemActivationCode(ctx, user.ID, code)
+		if err != nil {
+			var errMsg string
+			if errors.Is(err, domain.ErrCodeNotFound) {
+				errMsg = r.translator.T("error_code_not_found")
+			} else {
+				r.log.Error().Err(err).Str("code", code).Msg("failed to redeem activation code")
+				errMsg = r.translator.T("error_code_redeem_failed")
+			}
+			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: errMsg})
+		}
+		// On success, notify the user and show the main menu.
+		successMsg := r.translator.T("success_code_redeemed")
+		return r.sendMainMenu(ctx, message.Chat.ID, successMsg)
+
+	default:
+		// If we don't recognize the state, clear it and send a generic error.
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: message.Chat.ID, Text: r.translator.T("error_generic")})
+	}
 }

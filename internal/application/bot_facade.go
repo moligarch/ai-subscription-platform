@@ -297,3 +297,13 @@ func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text stri
 	// The actual AI reply will be sent later by the AIJobProcessor worker.
 	return "⏳ thinking...", nil
 }
+
+// HandleGenerateCodes generates a specified number of activation codes for a given plan.
+func (b *BotFacade) HandleGenerateCodes(ctx context.Context, planID string, count int) ([]string, error) {
+	codes, err := b.PlanUC.GenerateActivationCodes(ctx, planID, count)
+	if err != nil {
+		// Translate domain errors into user-friendly ones if needed, or just propagate
+		return nil, domain.ErrOperationFailed
+	}
+	return codes, nil
+}

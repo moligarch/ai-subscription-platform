@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/rs/zerolog"
 
@@ -131,7 +132,11 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 
 // SendMessage is the single method for sending any kind of message.
 func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
-	msg := tgbotapi.NewMessage(params.ChatID, r.escapeMarkdownV2(params.Text))
+	text := params.Text
+	if params.ParseMode == tgbotapi.ModeMarkdownV2 {
+		text = r.escapeMarkdownV2(params.Text)
+	}
+	msg := tgbotapi.NewMessage(params.ChatID, text)
 
 	// Apply ParseMode if provided.
 	if params.ParseMode != "" {
@@ -190,6 +195,7 @@ func (r *RealTelegramBotAdapter) SetMenuCommands(ctx context.Context, chatID int
 		{Command: "start", Description: r.translator.T("menu_restart")},
 		{Command: "plans", Description: r.translator.T("menu_plans")},
 		{Command: "status", Description: r.translator.T("menu_status")},
+		{Command: "history", Description: r.translator.T("menu_history")},
 		{Command: "settings", Description: r.translator.T("menu_settings")},
 		{Command: "help", Description: r.translator.T("menu_help")},
 	}
@@ -218,8 +224,9 @@ func (r *RealTelegramBotAdapter) SetMenuCommands(ctx context.Context, chatID int
 func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbotapi.Update) error {
 	var tgUser *tgbotapi.User
 	var chatID int64
+	var message *tgbotapi.Message
 
-	// 1. Uniformly extract user and chat info from the update.
+	// 1. Uniformly extract user, chat, and message info from the update.
 	if update.CallbackQuery != nil {
 		tgUser = update.CallbackQuery.From
 		if update.CallbackQuery.Message != nil {
@@ -228,6 +235,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	} else if update.Message != nil {
 		tgUser = update.Message.From
 		chatID = update.Message.Chat.ID
+		message = update.Message
 	} else {
 		return nil // Not an update we can handle.
 	}
@@ -236,44 +244,59 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 		return nil
 	}
 
-	// 2. Get or create the user record to check their registration status.
+	// 2. Get or create the user record.
 	user, err := r.facade.UserUC.RegisterOrFetch(ctx, tgUser.ID, tgUser.UserName)
 	if err != nil {
 		r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("failed to register or fetch user")
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID: tgUser.ID,
+			ChatID: chatID,
 			Text:   r.translator.T("error_generic"),
 		})
 	}
 
-	// 3. --- REGISTRATION STATE MACHINE ---
-	// If the user's registration is pending, all interactions are routed here.
+	// --- ROUTING LOGIC ---
+
+	// 3. HIGHEST PRIORITY: Handle the mandatory registration flow.
 	if user.RegistrationStatus == model.RegistrationStatusPending {
-		// Callbacks (e.g., "Verify", "Cancel") MUST be handled by the callback router.
+		// Callbacks from pending users (e.g., "Verify", "Cancel") MUST be handled by the callback router.
 		if update.CallbackQuery != nil {
 			return r.handleQuery(ctx, update.CallbackQuery)
 		}
-
 		// The /start command should always be allowed to (re)start the flow.
-		if update.Message != nil && update.Message.IsCommand() && update.Message.Command() == "start" {
-			return r.handleStartCommand(ctx, update.Message)
+		if message != nil && message.IsCommand() && message.Command() == "start" {
+			return r.handleStartCommand(ctx, message)
 		}
-
-		// Any other message (text or contact) is an answer to a registration question.
-		if update.Message != nil {
-			return r.handleRegistrationMessage(ctx, update.Message)
+		// Any other message is an answer to a registration question.
+		if message != nil {
+			return r.handleRegistrationMessage(ctx, message)
 		}
 		return nil // Ignore other update types (e.g., photos) during registration.
 	}
 
-	// 4. --- NORMAL OPERATION FOR COMPLETED USERS ---
-	// This block only runs if registration is complete.
+	// 4. SECOND PRIORITY: Check for any other active conversational state (like activation codes).
+	state, err := r.facade.UserUC.GetConversationState(ctx, tgUser.ID)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("failed to get conversation state")
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("error_generic")})
+	}
+
+	if state != nil {
+		if message != nil {
+			return r.handleConversationalReply(ctx, message, state)
+		}
+		// Callbacks are still handled by the normal callback router.
+		if update.CallbackQuery != nil {
+			return r.handleQuery(ctx, update.CallbackQuery)
+		}
+	}
+
+	// 5. DEFAULT: Normal operation for fully registered users with no active conversation.
 	var commandType string
 	if update.CallbackQuery != nil {
 		parts := strings.Split(update.CallbackQuery.Data, ":")
 		commandType = "callback:" + parts[0]
-	} else if update.Message != nil && update.Message.IsCommand() {
-		commandType = "/" + update.Message.Command()
+	} else if message != nil && message.IsCommand() {
+		commandType = "/" + message.Command()
 	} else {
 		commandType = "message"
 	}
@@ -285,10 +308,7 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 			r.log.Error().Err(err).Msg("rate limit error")
 		} else if !allowed {
 			metrics.IncRateLimitTriggered()
-			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID: chatID,
-				Text:   r.translator.T("rate_limit_exceeded"),
-			})
+			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("rate_limit_exceeded")})
 		}
 	}
 
@@ -296,33 +316,21 @@ func (r *RealTelegramBotAdapter) handleUpdate(ctx context.Context, update tgbota
 	if update.CallbackQuery != nil {
 		return r.handleQuery(ctx, update.CallbackQuery)
 	}
-	if update.Message.IsCommand() {
-		if handler, ok := r.commandRoutes()[update.Message.Command()]; ok {
-			return handler(ctx, update.Message)
+	if message.IsCommand() {
+		if handler, ok := r.commandRoutes()[message.Command()]; ok {
+			return handler(ctx, message)
 		}
-		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    chatID,
-			Text:      r.translator.T("unknown_command"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
-		})
+		return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("unknown_command")})
 	}
-	if update.Message.Text != "" {
-		reply, err := r.facade.HandleChatMessage(ctx, tgUser.ID, update.Message.Text)
+	if message.Text != "" {
+		reply, err := r.facade.HandleChatMessage(ctx, tgUser.ID, message.Text)
 		if err != nil {
 			r.log.Error().Err(err).Int64("tg_id", tgUser.ID).Msg("HandleChatMessage failed")
-			_ = r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    chatID,
-				Text:      r.translator.T("error_generic"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
-			})
+			_ = r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: r.translator.T("error_generic")})
 			return nil
 		}
 		if strings.TrimSpace(reply) != "" {
-			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    chatID,
-				Text:      reply,
-				ParseMode: tgbotapi.ModeMarkdownV2,
-			})
+			return r.SendMessage(ctx, adapter.SendMessageParams{ChatID: chatID, Text: reply})
 		}
 	}
 
@@ -397,7 +405,6 @@ func (r *RealTelegramBotAdapter) sendMainMenu(ctx context.Context, telegramID in
 	return r.SendMessage(ctx, adapter.SendMessageParams{
 		ChatID:      telegramID,
 		Text:        intro,
-		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	})
 }
@@ -570,8 +577,8 @@ func formatIRR(v int64) string {
 func (r *RealTelegramBotAdapter) escapeMarkdownV2(s string) string {
 	// List of all characters that must be escaped in MarkdownV2
 	replacer := strings.NewReplacer(
-		"_", "\\_", "*", "\\*", "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
-		"~", "\\~", "`", "\\`", ">", "\\>", "#", "\\#", "+", "\\+", "-", "\\-",
+		"_", "\\_" /*"*", "\\*", */, "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
+		"~", "\\~" /*, "`", "\\`"*/, ">", "\\>", "#", "\\#" /*"+", "\\+", */, "-", "\\-",
 		"=", "\\=", "|", "\\|", "{", "\\{", "}", "\\}", ".", "\\.", "!", "\\!",
 	)
 	return replacer.Replace(s)
