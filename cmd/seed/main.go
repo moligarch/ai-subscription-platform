@@ -104,9 +104,9 @@ func main() {
 
 	for _, pr := range seedPrices {
 		if err := prices.Create(ctx, repository.NoTX, &pr); err != nil {
-			log.Printf("pricing create %s: %v", pr.ModelName, err)
+			log.Printf("pricing not create %s: %v", pr.ModelName, err)
 		} else {
-			log.Printf("pricing not created: %s", pr.ModelName)
+			log.Printf("pricing created: %s", pr.ModelName)
 		}
 	}
 
