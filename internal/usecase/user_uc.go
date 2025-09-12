@@ -183,7 +183,6 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 
 	switch state.Step {
 	case StepAwaitFullName:
-		// --- THE REFINEMENT ---
 		// Validate that the user sent non-empty, plain text.
 		if strings.TrimSpace(messageText) == "" || phoneNumber != "" {
 			return u.translator.T("reg_invalid_fullname"), nil, nil
