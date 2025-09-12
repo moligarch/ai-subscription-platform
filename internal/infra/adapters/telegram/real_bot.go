@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -132,11 +131,7 @@ func (r *RealTelegramBotAdapter) StopPolling() {
 
 // SendMessage is the single method for sending any kind of message.
 func (r *RealTelegramBotAdapter) SendMessage(ctx context.Context, params adapter.SendMessageParams) error {
-	text := params.Text
-	if params.ParseMode == tgbotapi.ModeMarkdownV2 {
-		text = r.escapeMarkdownV2(params.Text)
-	}
-	msg := tgbotapi.NewMessage(params.ChatID, text)
+	msg := tgbotapi.NewMessage(params.ChatID, params.Text)
 
 	// Apply ParseMode if provided.
 	if params.ParseMode != "" {
@@ -463,7 +458,6 @@ func (r *RealTelegramBotAdapter) sendModelMenu(ctx context.Context, telegramID i
 	return r.SendMessage(ctx, adapter.SendMessageParams{
 		ChatID:      telegramID,
 		Text:        r.translator.T("model_menu_header"),
-		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	}) // Localized
 }
@@ -478,7 +472,6 @@ func (r *RealTelegramBotAdapter) sendEndChatButton(ctx context.Context, telegram
 	return r.SendMessage(ctx, adapter.SendMessageParams{
 		ChatID:      telegramID,
 		Text:        r.translator.T("success_chat_continue"),
-		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	}) // Localized
 }
@@ -507,7 +500,6 @@ func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID
 		return r.SendMessage(ctx, adapter.SendMessageParams{
 			ChatID:      telegramID,
 			Text:        r.translator.T("history_empty"),
-			ParseMode:   tgbotapi.ModeMarkdownV2,
 			ReplyMarkup: &markup,
 		}) // Localized
 	}
@@ -534,7 +526,6 @@ func (r *RealTelegramBotAdapter) sendHistoryMenu(ctx context.Context, telegramID
 	return r.SendMessage(ctx, adapter.SendMessageParams{
 		ChatID:      telegramID,
 		Text:        r.translator.T("history_menu_header"),
-		ParseMode:   tgbotapi.ModeMarkdownV2,
 		ReplyMarkup: &markup,
 	}) // Localized
 }

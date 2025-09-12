@@ -12,8 +12,7 @@ var (
 	ErrOperationFailed = errors.New("operation failed")
 	ErrInternal        = errors.New("internal error")
 	ErrRequestFailed   = errors.New("request failed")
-
-	ErrCodeAlreadyUsed = errors.New("activation code already used")
+	ErrUserNotFound    = errors.New("user not found")
 	ErrCodeNotFound    = errors.New("activation code not found")
 
 	ErrEncryptionFailed = errors.New("failed to encrypt content")
