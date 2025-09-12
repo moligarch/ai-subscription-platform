@@ -34,7 +34,6 @@ type ChatUseCase interface {
 	EndChat(ctx context.Context, sessionID string) error
 	FindActiveSession(ctx context.Context, userID string) (*model.ChatSession, error)
 	ListModels(ctx context.Context, userID string) ([]string, error)
-
 	ListHistory(ctx context.Context, userID string, offset, limit int) ([]HistoryItem, error)
 	SwitchActiveSession(ctx context.Context, userID, sessionID string) error
 	DeleteSession(ctx context.Context, sessionID string) error

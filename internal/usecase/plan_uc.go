@@ -114,7 +114,7 @@ func (p *planUC) GenerateActivationCodes(ctx context.Context, planID string, cou
 	for i := 0; i < count; i++ {
 		codeStr, err := generateActivationCode()
 		if err != nil {
-			return nil, err
+			return nil, domain.ErrOperationFailed
 		}
 
 		newCode := &model.ActivationCode{

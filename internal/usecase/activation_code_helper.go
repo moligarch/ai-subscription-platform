@@ -3,6 +3,7 @@ package usecase
 import (
 	"crypto/rand"
 	"io"
+	"telegram-ai-subscription/internal/domain"
 )
 
 // generateActivationCode creates a secure, random, and human-readable activation code.
@@ -14,7 +15,7 @@ func generateActivationCode() (string, error) {
 
 	buffer := make([]byte, codeLength)
 	if _, err := io.ReadFull(rand.Reader, buffer); err != nil {
-		return "", err
+		return "", domain.ErrInternal
 	}
 
 	for i := 0; i < codeLength; i++ {

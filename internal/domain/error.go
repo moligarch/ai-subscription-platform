@@ -10,6 +10,7 @@ var (
 	ErrAlreadyExists   = errors.New("entity already exists")
 	ErrInvalidArgument = errors.New("invalid argument")
 	ErrOperationFailed = errors.New("operation failed")
+	ErrInternal        = errors.New("internal error")
 	ErrRequestFailed   = errors.New("request failed")
 
 	ErrCodeAlreadyUsed = errors.New("activation code already used")
