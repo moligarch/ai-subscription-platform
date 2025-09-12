@@ -167,6 +167,23 @@ END$$;
 
 
 -- =============================================================
+-- ACTIVATION CODES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS activation_codes (
+  id                   UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+  code                 TEXT         NOT NULL UNIQUE,
+  plan_id              UUID         NOT NULL REFERENCES subscription_plans(id) ON DELETE CASCADE,
+  is_redeemed          BOOLEAN      NOT NULL DEFAULT FALSE,
+  redeemed_by_user_id  UUID         NULL REFERENCES users(id) ON DELETE SET NULL,
+  redeemed_at          TIMESTAMPTZ  NULL,
+  created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+  expires_at           TIMESTAMPTZ  NULL -- Optional expiry date for codes
+);
+
+CREATE INDEX IF NOT EXISTS idx_activation_codes_plan_id ON activation_codes(plan_id);
+CREATE INDEX IF NOT EXISTS idx_activation_codes_redeemed ON activation_codes(is_redeemed);
+
+-- =============================================================
 -- CHAT SESSIONS + MESSAGES
 -- =============================================================
 CREATE TABLE IF NOT EXISTS chat_sessions (
