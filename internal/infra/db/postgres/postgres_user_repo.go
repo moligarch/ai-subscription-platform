@@ -121,3 +121,35 @@ func (r *userRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, sin
 	}
 	return n, nil
 }
+
+func (r *userRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	if limit <= 0 {
+		limit = 50 // Default limit
+	}
+	const q = `
+SELECT id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
+       allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
+  FROM users ORDER BY registered_at DESC OFFSET $1 LIMIT $2;`
+
+	rows, err := queryRows(ctx, r.pool, tx, q, offset, limit)
+	if err != nil {
+		return nil, domain.ErrOperationFailed
+	}
+	defer rows.Close()
+
+	var users []*model.User
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
+			return nil, domain.ErrReadDatabaseRow
+		}
+		users = append(users, &u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return users, nil
+}

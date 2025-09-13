@@ -26,6 +26,7 @@ import (
 	red "telegram-ai-subscription/internal/infra/redis"
 	"telegram-ai-subscription/internal/infra/sched"
 	"telegram-ai-subscription/internal/infra/security"
+	"telegram-ai-subscription/internal/infra/web"
 	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 
@@ -181,7 +182,7 @@ func main() {
 	}
 	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, txManager, logger)
 
-	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
+	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
 
 	// Bot facade (used by telegram adapter)
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cfg.Payment.ZarinPal.CallbackURL)
@@ -212,10 +213,16 @@ func main() {
 		}
 	}
 
-	// ---- HTTP callback server with guards ----
-	srv := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
+	// ---- HTTP server with guards ----
+	// Payment callback server
+	paymentCallbackServer := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
+	// Admin Panel API server
+	adminAPIServer := web.NewServer(statsUC, userUC, cfg.Admin.APIKey, logger)
+
 	mux := http.NewServeMux()
-	srv.Register(mux)
+	paymentCallbackServer.Register(mux)
+	adminAPIServer.RegisterRoutes(mux)
+
 	handler := api.Chain(mux,
 		api.TraceID(logger),
 		api.RequestLog(logger),

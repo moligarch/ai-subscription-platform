@@ -13,6 +13,7 @@ log:
 
 admin:
   port: 8080              # fallback port for HTTP server (incl. payment callback)
+  api_key: ""
 
 database:
   url: "postgres://app:app@<posgres_container_ip>:5432/appdb?sslmode=disable"

@@ -228,6 +228,7 @@ type MockUserRepo struct {
 	FindByIDFunc           func(ctx context.Context, tx repository.Tx, id string) (*model.User, error)
 	CountUsersFunc         func(ctx context.Context, tx repository.Tx) (int, error)
 	CountInactiveUsersFunc func(ctx context.Context, tx repository.Tx, olderThan time.Time) (int, error)
+	ListFunc               func(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error)
 }
 
 var _ repository.UserRepository = (*MockUserRepo)(nil)
@@ -262,7 +263,7 @@ func (r *MockUserRepo) FindByTelegramID(ctx context.Context, tx repository.Tx, t
 		cp := *u
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrUserNotFound
 }
 
 func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
@@ -275,7 +276,7 @@ func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *u
 		return &cp, nil
 	}
-	return nil, domain.ErrNotFound
+	return nil, domain.ErrUserNotFound
 }
 
 func (r *MockUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error) {
@@ -300,6 +301,23 @@ func (r *MockUserRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx,
 		}
 	}
 	return n, nil
+}
+
+func (r *MockUserRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	if r.ListFunc != nil {
+		return r.ListFunc(ctx, tx, offset, limit)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	users := make([]*model.User, 0, len(r.byID))
+	for _, u := range r.byID {
+		users = append(users, u)
+	}
+	if len(users) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	return users, nil
 }
 
 // ---- Mock SubscriptionPlanRepository ----

@@ -43,6 +43,7 @@ type UserUseCase interface {
 	SetConversationState(ctx context.Context, tgID int64, state *repository.ConversationState) error
 	GetConversationState(ctx context.Context, tgID int64) (*repository.ConversationState, error)
 	ClearConversationState(ctx context.Context, tgID int64) error
+	List(ctx context.Context, offset, limit int) ([]*model.User, error)
 }
 
 type userUC struct {
@@ -82,7 +83,7 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
 		usr, err := u.users.FindByTelegramID(ctx, tx, tgID)
 		if err != nil {
-			if err != domain.ErrNotFound {
+			if err != domain.ErrUserNotFound {
 				return err
 			}
 			u.log.Warn().Err(err).Int64("tg_id", tgID).Msg("Failed to find user by Telegram ID")
@@ -291,4 +292,9 @@ func (u *userUC) GetConversationState(ctx context.Context, tgID int64) (*reposit
 
 func (u *userUC) ClearConversationState(ctx context.Context, tgID int64) error {
 	return u.stateRepo.ClearState(ctx, tgID)
+}
+
+func (u *userUC) List(ctx context.Context, offset, limit int) ([]*model.User, error) {
+	defer logging.TraceDuration(u.log, "UserUC.List")()
+	return u.users.List(ctx, repository.NoTX, offset, limit)
 }

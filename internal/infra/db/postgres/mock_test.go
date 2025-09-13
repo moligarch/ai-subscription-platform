@@ -40,6 +40,7 @@ type mockInnerUserRepo struct {
 	FindByIDFunc           func(ctx context.Context, tx repository.Tx, id string) (*model.User, error)
 	CountUsersFunc         func(ctx context.Context, tx repository.Tx) (int, error)
 	CountInactiveUsersFunc func(ctx context.Context, tx repository.Tx, since time.Time) (int, error)
+	ListFunc               func(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error)
 }
 
 func (m *mockInnerUserRepo) Save(ctx context.Context, tx repository.Tx, u *model.User) error {
@@ -56,6 +57,9 @@ func (m *mockInnerUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (i
 }
 func (m *mockInnerUserRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, since time.Time) (int, error) {
 	return m.CountInactiveUsersFunc(ctx, tx, since)
+}
+func (m *mockInnerUserRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	return m.ListFunc(ctx, tx, offset, limit)
 }
 
 // mockRedisClient mocks our Redis client wrapper.

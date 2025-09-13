@@ -31,7 +31,8 @@ type LogConfig struct {
 }
 
 type AdminConfig struct {
-	Port int `yaml:"port"`
+	Port   int    `yaml:"port"`
+	APIKey string `yaml:"api_key"`
 }
 
 type DatabaseConfig struct {
@@ -203,6 +204,9 @@ func LoadConfig() (*Config, error) {
 	}
 	if callbackURL := os.Getenv("PAYMENT_ZARINPAL_CALLBACK_URL"); callbackURL != "" {
 		cfg.Payment.ZarinPal.CallbackURL = callbackURL
+	}
+	if apiKey := os.Getenv("ADMIN_API_KEY"); apiKey != "" {
+		cfg.Admin.APIKey = apiKey
 	}
 
 	// Step 3: Apply defaults for non-sensitive values

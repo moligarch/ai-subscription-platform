@@ -97,3 +97,7 @@ func (d *userRepoCacheDecorator) CountUsers(ctx context.Context, tx repository.T
 func (d *userRepoCacheDecorator) CountInactiveUsers(ctx context.Context, tx repository.Tx, since time.Time) (int, error) {
 	return d.inner.CountInactiveUsers(ctx, tx, since)
 }
+
+func (d *userRepoCacheDecorator) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	return d.inner.List(ctx, tx, offset, limit)
+}
