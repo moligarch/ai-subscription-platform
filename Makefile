@@ -43,10 +43,24 @@ test:
 	@echo "Running unit tests..."
 	@go test -v -race ./...
 
-# Run slower integration tests. Requires Docker to be running.
+
+# Default to running all integration tests if 'package' is not specified.
+TEST_PATH := ./...
+ifeq ($(package),postgres)
+	TEST_PATH := ./internal/infra/db/postgres
+endif
+ifeq ($(package),web)
+	TEST_PATH := ./internal/infra/web
+endif
+
+# Run slower integration tests. Can be focused on a specific package.
+# Usage:
+#   make integration-test              (runs all integration tests)
+#   make integration-test package=postgres (runs only postgres tests)
+#   make integration-test package=web      (runs only web tests)
 integration-test:
-	@echo "Running integration tests (requires Docker)..."
-	@go test -v -race -tags=integration ./...
+	@echo "Running integration tests for package(s): $(TEST_PATH)..."
+	@go test -v -race -tags=integration $(TEST_PATH)
 
 # Run the end-to-end database setup script.
 e2e-setup:
@@ -89,7 +103,7 @@ help:
 	@echo "  build-linux      - Build the application for Linux."
 	@echo "  build-windows    - Build the application for Windows."
 	@echo "  test             - Run all unit tests."
-	@echo "  integration-test - Run all integration tests (requires Docker)."
+	@echo "  integration-test - Run integration tests. Use 'package=postgres' or 'package=web' to focus."
 	@echo "  e2e-setup        - Run the end-to-end database setup script."
 	@echo "  docker-up        - Start all services with Docker Compose."
 	@echo "  docker-down      - Stop and remove all services and volumes."
