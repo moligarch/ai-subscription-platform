@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -80,6 +81,9 @@ func (r *chatSessionRepo) SaveMessage(ctx context.Context, tx repository.Tx, m *
 		}
 	}
 	if err := rows.Scan(&dataEncrypted, &allowStore); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, domain.ErrNotFound
+		}
 		return false, domain.ErrReadDatabaseRow
 	}
 
@@ -258,6 +262,9 @@ func (r *chatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id str
 		var enc sql.NullBool
 		var ts time.Time
 		if err := rows.Scan(&role, &content, &tokens, &enc, &ts); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		if enc.Valid && enc.Bool {

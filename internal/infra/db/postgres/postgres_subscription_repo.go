@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgx/v4"
@@ -162,6 +163,9 @@ SELECT plan_id, COUNT(*)
 		var planID string
 		var c int
 		if err := rows.Scan(&planID, &c); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		m[planID] = c
@@ -199,6 +203,9 @@ func (r *subscriptionRepo) CountByStatus(ctx context.Context, tx repository.Tx) 
 		var status string
 		var count int
 		if err := rows.Scan(&status, &count); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		counts[model.SubscriptionStatus(status)] = count

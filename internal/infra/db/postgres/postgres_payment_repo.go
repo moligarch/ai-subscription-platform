@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -153,6 +154,9 @@ func (r *paymentRepo) ListPendingOlderThan(ctx context.Context, tx repository.Tx
 	for rows.Next() {
 		p := new(model.Payment)
 		if err := rows.Scan(&p.ID, &p.UserID, &p.PlanID, &p.Provider, &p.Amount, &p.Currency, &p.Authority, &p.RefID, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.PaidAt, &p.Callback, &p.Description, &p.Meta, &p.SubscriptionID, &p.ActivationCode, &p.ActivationExpiresAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		out = append(out, p)

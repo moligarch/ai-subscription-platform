@@ -27,7 +27,7 @@ func findProjectRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for i := 0; i < 10; i++ { // Limit to 10 levels up
+	for i := 0; i < 6; i++ { // Limit to 6 levels up
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir, nil
 		}

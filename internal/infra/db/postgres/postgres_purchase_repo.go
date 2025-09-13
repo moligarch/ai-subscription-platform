@@ -2,7 +2,7 @@ package postgres
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -59,7 +59,10 @@ SELECT id, user_id, plan_id, payment_id, subscription_id, created_at
 	for rows.Next() {
 		var pu model.Purchase
 		if err := rows.Scan(&pu.ID, &pu.UserID, &pu.PlanID, &pu.PaymentID, &pu.SubscriptionID, &pu.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan purchase: %w", err)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
+			return nil, domain.ErrReadDatabaseRow
 		}
 		out = append(out, &pu)
 	}
