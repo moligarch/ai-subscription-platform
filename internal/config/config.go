@@ -173,6 +173,7 @@ func LoadConfig() (*Config, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Runtime.Dev = dev
 
 	// Step 2: Override with environment variables for secrets and key settings
 	// Bot
@@ -233,8 +234,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Step 4: Final validation (will now use the merged config)
-	cfg.Runtime.Dev = dev
-	if err := cfg.Validate(); err != nil {
+
+	if err := cfg.Validate(); err != nil && !cfg.Runtime.Dev {
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 

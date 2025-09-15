@@ -217,7 +217,7 @@ func main() {
 	// Payment callback server
 	paymentCallbackServer := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
 	// Admin Panel API server
-	adminAPIServer := web.NewServer(statsUC, userUC, cfg.Admin.APIKey, logger)
+	adminAPIServer := web.NewServer(statsUC, userUC, subUC, cfg.Admin.APIKey, logger)
 
 	mux := http.NewServeMux()
 	paymentCallbackServer.Register(mux)

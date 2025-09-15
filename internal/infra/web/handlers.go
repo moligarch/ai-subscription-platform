@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
 )
@@ -97,6 +99,48 @@ func usersListHandler(userUC usecase.UserUseCase) http.HandlerFunc {
 			Total:  total,
 			Limit:  limit,
 			Offset: offset,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+func userGetHandler(userUC usecase.UserUseCase, subUC usecase.SubscriptionUseCase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// Extract user ID from URL path: /api/v1/users/{id}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/users/")
+		if id == "" {
+			http.Error(w, "User ID is required", http.StatusBadRequest)
+			return
+		}
+
+		user, err := userUC.GetByTelegramID(ctx, 123)
+		if err != nil {
+			if err == domain.ErrUserNotFound {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "Failed to get user", http.StatusInternalServerError)
+			return
+		}
+
+		subscriptions, err := subUC.ListByUserID(ctx, user.ID)
+		if err != nil {
+			http.Error(w, "Failed to get user subscriptions", http.StatusInternalServerError)
+			return
+		}
+
+		// Create a structured response for the user details
+		response := struct {
+			User          *model.User               `json:"user"`
+			Subscriptions []*model.UserSubscription `json:"subscriptions"`
+		}{
+			User:          user,
+			Subscriptions: subscriptions,
 		}
 
 		w.Header().Set("Content-Type", "application/json")

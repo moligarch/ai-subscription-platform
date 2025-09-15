@@ -15,11 +15,14 @@ deploy/
 # OS junk
 .DS_Store
 
-
-# Local secrets (we'll mount them instead)
+# Local secrets & configs
 config.yaml
 .env
+docker-compose*.yml
 
-# Test cache
+# Test files & artifacts
 **/*_test.go
 .coverage
+
+# Documentation
+*.md

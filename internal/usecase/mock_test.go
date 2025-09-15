@@ -401,6 +401,7 @@ type MockSubscriptionRepo struct {
 	FindActiveByUserFunc        func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error)
 	FindReservedByUserFunc      func(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error)
 	FindByIDFunc                func(ctx context.Context, tx repository.Tx, id string) (*model.UserSubscription, error)
+	ListByUserIDFunc            func(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error)
 	FindExpiringFunc            func(ctx context.Context, tx repository.Tx, within int) ([]*model.UserSubscription, error)
 	CountActiveByPlanFunc       func(ctx context.Context, tx repository.Tx) (map[string]int, error)
 	TotalRemainingCreditsFunc   func(ctx context.Context, tx repository.Tx) (int64, error)
@@ -488,7 +489,13 @@ func (r *MockSubscriptionRepo) FindByID(ctx context.Context, tx repository.Tx, i
 	return nil, nil
 }
 
-// Replace the existing FindExpiring with this
+func (r *MockSubscriptionRepo) ListByUserID(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
+	if r.ListByUserIDFunc != nil {
+		return r.ListByUserIDFunc(ctx, tx, userID)
+	}
+	return nil, nil
+}
+
 func (r *MockSubscriptionRepo) FindExpiring(ctx context.Context, tx repository.Tx, withinDays int) ([]*model.UserSubscription, error) {
 	if r.FindExpiringFunc != nil {
 		return r.FindExpiringFunc(ctx, tx, withinDays)

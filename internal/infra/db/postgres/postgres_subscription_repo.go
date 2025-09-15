@@ -98,6 +98,32 @@ SELECT id, user_id, plan_id, created_at, scheduled_start_at, start_at, expires_a
 	return out, nil
 }
 
+func (r *subscriptionRepo) ListByUserID(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
+	const q = `
+SELECT id, user_id, plan_id, created_at, scheduled_start_at, start_at, expires_at, remaining_credits, status
+  FROM user_subscriptions
+ WHERE user_id=$1
+ ORDER BY created_at DESC;`
+	rows, err := queryRows(ctx, r.pool, tx, q, userID)
+	if err != nil {
+		return nil, domain.ErrOperationFailed
+	}
+	defer rows.Close()
+
+	var out []*model.UserSubscription
+	for rows.Next() {
+		s, err := scanSub(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return out, nil
+}
+
 func (r *subscriptionRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.UserSubscription, error) {
 	const q = `
 SELECT id, user_id, plan_id, created_at, scheduled_start_at, start_at, expires_at, remaining_credits, status

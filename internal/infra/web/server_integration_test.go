@@ -5,6 +5,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"telegram-ai-subscription/internal/domain/model"
@@ -70,7 +71,9 @@ func TestStatsAPI_Integration(t *testing.T) {
 
 	// Usecase and Server
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, paymentRepo, &logger)
-	server := NewServer(statsUC, nil, apiKey, &logger)
+	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
+	server := NewServer(statsUC, userUC, subUC, apiKey, &logger)
 
 	// HTTP Test Server
 	mux := http.NewServeMux()
@@ -136,16 +139,24 @@ func TestUsersListAPI_Integration(t *testing.T) {
 
 	// Repositories
 	userRepo := postgres.NewUserRepo(testPool)
-	// ... (other repos not needed for this test)
+	planRepo := postgres.NewPlanRepo(testPool)
+	subRepo := postgres.NewSubscriptionRepo(testPool)
 
-	// Seed Data: Create 3 users
-	userRepo.Save(ctx, nil, &model.User{ID: "user-1", TelegramID: 1})
-	userRepo.Save(ctx, nil, &model.User{ID: "user-2", TelegramID: 2})
-	userRepo.Save(ctx, nil, &model.User{ID: "user-3", TelegramID: 3})
+	// Create 3 users using the constructor and check for errors on save.
+	for i := 1; i <= 3; i++ {
+		user, err := model.NewUser("", int64(i), fmt.Sprintf("testuser%d", i))
+		if err != nil {
+			t.Fatalf("model.NewUser() failed: %v", err)
+		}
+		if err := userRepo.Save(ctx, nil, user); err != nil {
+			t.Fatalf("userRepo.Save() failed for user %d: %v", i, err)
+		}
+	}
 
 	// Usecase and Server
 	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
-	server := NewServer(nil, userUC, apiKey, &logger) // statsUC is not needed here
+	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
+	server := NewServer(nil, userUC, subUC, apiKey, &logger) // statsUC is not needed here
 
 	// HTTP Test Server
 	mux := http.NewServeMux()

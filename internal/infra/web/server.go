@@ -11,6 +11,7 @@ import (
 type Server struct {
 	statsUC usecase.StatsUseCase
 	userUC  usecase.UserUseCase
+	subUC   usecase.SubscriptionUseCase
 	apiKey  string
 	log     *zerolog.Logger
 }
@@ -18,12 +19,14 @@ type Server struct {
 func NewServer(
 	statsUC usecase.StatsUseCase,
 	userUC usecase.UserUseCase,
+	subUC usecase.SubscriptionUseCase,
 	apiKey string,
 	logger *zerolog.Logger,
 ) *Server {
 	return &Server{
 		statsUC: statsUC,
 		userUC:  userUC,
+		subUC:   subUC,
 		apiKey:  apiKey,
 		log:     logger,
 	}
@@ -35,9 +38,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	statsHandler := s.authMiddleware(statsHandler(s.statsUC))
 	mux.Handle("/api/v1/stats", statsHandler)
 
-	// Register the user list endpoint
-	usersHandler := s.authMiddleware(usersListHandler(s.userUC))
-	mux.Handle("/api/v1/users", usersHandler)
+	// A single handler for all /api/v1/users/ routes
+	usersRouter := s.authMiddleware(s.usersRouter())
+	mux.Handle("/api/v1/users/", usersRouter)
 }
 
 // authMiddleware provides simple Bearer token authentication for the admin API.
@@ -67,5 +70,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) usersRouter() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/users")
+		path = strings.TrimSuffix(path, "/")
+
+		if path == "" { // Path is /api/v1/users
+			usersListHandler(s.userUC)(w, r)
+		} else { // Path is /api/v1/users/{id}
+			userGetHandler(s.userUC, s.subUC)(w, r)
+		}
 	})
 }

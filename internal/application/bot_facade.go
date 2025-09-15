@@ -188,7 +188,7 @@ type StatusInfo struct {
 func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (*StatusInfo, error) {
 	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil || user == nil {
-		return nil, errors.New("user not found")
+		return nil, domain.ErrUserNotFound
 	}
 
 	info := &StatusInfo{}
@@ -229,7 +229,7 @@ func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (*Status
 func (b *BotFacade) HandleBalance(ctx context.Context, tgID int64) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 	sub, err := b.SubscriptionUC.GetActive(ctx, user.ID)
 	if err != nil || sub == nil {
@@ -243,7 +243,7 @@ func (b *BotFacade) HandleBalance(ctx context.Context, tgID int64) (string, erro
 func (b *BotFacade) HandleStartChat(ctx context.Context, tgID int64, modelName string) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 
 	models, err := b.ChatUC.ListModels(ctx, user.ID)
@@ -285,7 +285,7 @@ func (b *BotFacade) HandleEndChat(ctx context.Context, tgID int64, sessionID str
 func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text string) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil || user == nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 
 	sess, err := b.ChatUC.FindActiveSession(ctx, user.ID)

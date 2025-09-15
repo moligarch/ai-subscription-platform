@@ -149,7 +149,7 @@ func (u *userUC) ToggleMessageStorage(ctx context.Context, tgID int64) error {
 			return err
 		}
 		if user == nil {
-			return domain.ErrNotFound
+			return domain.ErrUserNotFound
 		}
 
 		// Toggle the setting

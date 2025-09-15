@@ -15,7 +15,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    command: ["postgres","-c","listen_addresses=*"]
+    # command: ["postgres","-c","listen_addresses=*"] 
     restart: unless-stopped
     networks:
       lan_net:
