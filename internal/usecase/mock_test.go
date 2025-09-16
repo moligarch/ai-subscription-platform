@@ -312,11 +312,13 @@ func (r *MockUserRepo) List(ctx context.Context, tx repository.Tx, offset, limit
 
 	users := make([]*model.User, 0, len(r.byID))
 	for _, u := range r.byID {
-		users = append(users, u)
+		cp := *u
+		users = append(users, &cp)
 	}
 	if len(users) == 0 {
 		return nil, domain.ErrNotFound
 	}
+	// Note: This mock doesn't implement pagination, it returns all users.
 	return users, nil
 }
 
