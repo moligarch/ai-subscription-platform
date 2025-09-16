@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
 	"testing"
@@ -289,5 +290,65 @@ func TestPlansUpdateHandler(t *testing.T) {
 		if status := rr.Code; status != http.StatusNotFound {
 			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusNotFound)
 		}
+	})
+}
+
+func TestPlansDeleteHandler(t *testing.T) {
+	// Arrange for all subtests
+	plan1 := model.SubscriptionPlan{
+		ID:   uuid.NewString(),
+		Name: "To Be Deleted",
+	}
+	planInUse := model.SubscriptionPlan{
+		ID:   uuid.NewString(),
+		Name: "Active Plan",
+	}
+	planRepo := &mockPlanRepo{
+		plans: map[string]*model.SubscriptionPlan{
+			plan1.ID:     &plan1,
+			planInUse.ID: &planInUse,
+		},
+	}
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, newTestLogger())
+	handler := plansDeleteHandler(planUC)
+
+	t.Run("Success", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/v1/plans/"+plan1.ID, nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusNoContent {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusNoContent)
+		}
+		if _, ok := planRepo.plans[plan1.ID]; ok {
+			t.Error("plan was not deleted from the mock repo")
+		}
+	})
+
+	t.Run("Failure for plan not found", func(t *testing.T) {
+		req := httptest.NewRequest("DELETE", "/api/v1/plans/"+uuid.NewString(), nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusNotFound {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusNotFound)
+		}
+	})
+
+	t.Run("Failure for plan in use", func(t *testing.T) {
+		// Simulate the specific domain error for a plan that's in use
+		planRepo.DeleteError = domain.ErrSubsciptionWithActiveUser
+
+		req := httptest.NewRequest("DELETE", "/api/v1/plans/"+planInUse.ID, nil)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusConflict {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusConflict)
+		}
+		planRepo.DeleteError = nil // Reset for other tests
 	})
 }

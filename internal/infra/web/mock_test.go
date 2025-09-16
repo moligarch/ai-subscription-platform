@@ -116,6 +116,7 @@ type mockPlanRepo struct {
 	plans                                 map[string]*model.SubscriptionPlan
 	ListAllError                          error
 	SaveError                             error
+	DeleteError                           error
 }
 
 func (m *mockPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
@@ -150,5 +151,19 @@ func (m *mockPlanRepo) Save(ctx context.Context, tx repository.Tx, plan *model.S
 		m.plans = make(map[string]*model.SubscriptionPlan)
 	}
 	m.plans[plan.ID] = plan
+	return nil
+}
+
+func (m *mockPlanRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
+	if m.DeleteError != nil {
+		return m.DeleteError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if _, ok := m.plans[id]; !ok {
+		return domain.ErrNotFound
+	}
+	delete(m.plans, id)
 	return nil
 }

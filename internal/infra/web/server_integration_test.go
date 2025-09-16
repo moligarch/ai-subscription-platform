@@ -5,10 +5,12 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/infra/db/postgres"
 	"telegram-ai-subscription/internal/usecase"
@@ -345,4 +347,85 @@ func TestPlansUpdateAPI_Integration(t *testing.T) {
 	if savedPlan.DurationDays != 45 {
 		t.Errorf("Expected saved plan duration to be 45, got %d", savedPlan.DurationDays)
 	}
+}
+
+func TestPlansDeleteAPI_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode.")
+	}
+	defer cleanup(t)
+	ctx := context.Background()
+	logger := zerolog.New(nil)
+	const apiKey = "integration-test-key"
+
+	// Arrange: Setup repositories
+	planRepo := postgres.NewPlanRepo(testPool)
+	userRepo := postgres.NewUserRepo(testPool)
+	subRepo := postgres.NewSubscriptionRepo(testPool)
+
+	// Seed Data for a successful deletion
+	planToDelete, _ := model.NewSubscriptionPlan("", "To Delete", 30, 100, 1000)
+	if err := planRepo.Save(ctx, nil, planToDelete); err != nil {
+		t.Fatalf("failed to save planToDelete: %v", err)
+	}
+
+	// Seed Data for a conflict scenario
+	planInUse, _ := model.NewSubscriptionPlan("", "In Use", 30, 100, 1000)
+	user, _ := model.NewUser("", 123, "sub-user")
+	if err := planRepo.Save(ctx, nil, planInUse); err != nil {
+		t.Fatalf("failed to save planInUse: %v", err)
+	}
+	if err := userRepo.Save(ctx, nil, user); err != nil {
+		t.Fatalf("failed to save user: %v", err)
+	}
+	sub, _ := model.NewUserSubscription(uuid.NewString(), user.ID, planInUse)
+	if err := subRepo.Save(ctx, nil, sub); err != nil {
+		t.Fatalf("failed to save subscription: %v", err)
+	}
+
+	// Setup Server
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
+	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	t.Run("Success", func(t *testing.T) {
+		// Act
+		req, _ := http.NewRequest("DELETE", testServer.URL+"/api/v1/plans/"+planToDelete.ID, nil)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer res.Body.Close()
+
+		// Assert
+		if res.StatusCode != http.StatusNoContent {
+			t.Fatalf("Expected status 204 No Content, got %d", res.StatusCode)
+		}
+
+		// Verify deletion from database
+		_, err = planRepo.FindByID(ctx, nil, planToDelete.ID)
+		if !errors.Is(err, domain.ErrNotFound) {
+			t.Error("Expected plan to be deleted from DB, but it was found")
+		}
+	})
+
+	t.Run("Failure for plan in use", func(t *testing.T) {
+		// Act
+		req, _ := http.NewRequest("DELETE", testServer.URL+"/api/v1/plans/"+planInUse.ID, nil)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer res.Body.Close()
+
+		// Assert
+		if res.StatusCode != http.StatusConflict {
+			t.Fatalf("Expected status 409 Conflict, got %d", res.StatusCode)
+		}
+	})
 }
