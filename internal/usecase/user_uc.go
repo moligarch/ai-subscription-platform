@@ -33,6 +33,7 @@ var _ UserUseCase = (*userUC)(nil)
 type UserUseCase interface {
 	RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error)
 	GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error)
+	FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error)
 	Count(ctx context.Context) (int, error)
 	CountInactiveSince(ctx context.Context, since time.Time) (int, error)
 	ToggleMessageStorage(ctx context.Context, tgID int64) error
@@ -130,6 +131,11 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 func (u *userUC) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error) {
 	defer logging.TraceDuration(u.log, "UserUC.GetByTelegramID")()
 	return u.users.FindByTelegramID(ctx, repository.NoTX, tgID)
+}
+
+func (u *userUC) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
+	defer logging.TraceDuration(u.log, "UserUC.FindByID")()
+	return u.users.FindByID(ctx, tx, id)
 }
 
 func (u *userUC) Count(ctx context.Context) (int, error) {

@@ -7,8 +7,45 @@ import (
 	"strings"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
+	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/usecase"
 )
+
+// A struct to define the expected JSON request body for creating a plan.
+type planCreateRequest struct {
+	Name            string   `json:"name"`
+	DurationDays    int      `json:"duration_days"`
+	Credits         int64    `json:"credits"`
+	PriceIRR        int64    `json:"price_irr"`
+	SupportedModels []string `json:"supported_models"`
+}
+
+// Handler for creating a new subscription plan.
+func plansCreateHandler(planUC usecase.PlanUseCase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		var req planCreateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		plan, err := planUC.Create(ctx, req.Name, req.DurationDays, req.Credits, req.PriceIRR, req.SupportedModels)
+		if err != nil {
+			if err == domain.ErrInvalidArgument {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Error(w, "Failed to create plan", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated) // 201 Created is the correct status for a successful POST
+		json.NewEncoder(w).Encode(plan)
+	}
+}
 
 // statsHandler returns an http.HandlerFunc that serves bot statistics.
 func statsHandler(statsUC usecase.StatsUseCase) http.HandlerFunc {
@@ -118,7 +155,7 @@ func userGetHandler(userUC usecase.UserUseCase, subUC usecase.SubscriptionUseCas
 			return
 		}
 
-		user, err := userUC.GetByTelegramID(ctx, 123)
+		user, err := userUC.FindByID(ctx, repository.NoTX, id)
 		if err != nil {
 			if err == domain.ErrUserNotFound {
 				http.NotFound(w, r)
@@ -141,6 +178,30 @@ func userGetHandler(userUC usecase.UserUseCase, subUC usecase.SubscriptionUseCas
 		}{
 			User:          user,
 			Subscriptions: subscriptions,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+// Handler for listing all subscription plans.
+func plansListHandler(planUC usecase.PlanUseCase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		plans, err := planUC.List(ctx)
+		if err != nil {
+			http.Error(w, "Failed to list plans", http.StatusInternalServerError)
+			return
+		}
+
+		// To be consistent with our other list endpoints, we wrap the data.
+		response := struct {
+			Data []*model.SubscriptionPlan `json:"data"`
+		}{
+			Data: plans,
 		}
 
 		w.Header().Set("Content-Type", "application/json")

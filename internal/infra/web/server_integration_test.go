@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/infra/db/postgres"
 	"telegram-ai-subscription/internal/usecase"
@@ -73,7 +74,7 @@ func TestStatsAPI_Integration(t *testing.T) {
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, paymentRepo, &logger)
 	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
-	server := NewServer(statsUC, userUC, subUC, apiKey, &logger)
+	server := NewServer(statsUC, userUC, subUC, nil, apiKey, &logger)
 
 	// HTTP Test Server
 	mux := http.NewServeMux()
@@ -156,7 +157,7 @@ func TestUsersListAPI_Integration(t *testing.T) {
 	// Usecase and Server
 	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
-	server := NewServer(nil, userUC, subUC, apiKey, &logger) // statsUC is not needed here
+	server := NewServer(nil, userUC, subUC, nil, apiKey, &logger) // statsUC is not needed here
 
 	// HTTP Test Server
 	mux := http.NewServeMux()
@@ -197,4 +198,96 @@ func TestUsersListAPI_Integration(t *testing.T) {
 	if body.Offset != 1 {
 		t.Errorf("Expected offset=1, got %d", body.Offset)
 	}
+}
+
+func TestPlansCreateAPI_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode.")
+	}
+	defer cleanup(t)
+	ctx := context.Background()
+	logger := zerolog.New(nil)
+	const apiKey = "integration-test-key"
+
+	// Arrange: Setup repositories, use cases, and the test server
+	planRepo := postgres.NewPlanRepo(testPool)
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
+	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	t.Run("Success", func(t *testing.T) {
+		// Define the plan to be created
+		planPayload := `
+		{
+			"name": "API-Integration-Plan",
+			"duration_days": 90,
+			"credits": 500000,
+			"price_irr": 250000,
+			"supported_models": ["gpt-4o"]
+		}`
+		bodyReader := strings.NewReader(planPayload)
+
+		// Act: Make the POST request
+		req, _ := http.NewRequest("POST", testServer.URL+"/api/v1/plans", bodyReader)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer res.Body.Close()
+
+		// Assert: Check the HTTP response
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("Expected status 201 Created, got %d", res.StatusCode)
+		}
+
+		var createdPlan model.SubscriptionPlan
+		if err := json.NewDecoder(res.Body).Decode(&createdPlan); err != nil {
+			t.Fatalf("Failed to decode response: %v", err)
+		}
+
+		if createdPlan.Name != "API-Integration-Plan" {
+			t.Errorf("Expected plan name to be 'API-Integration-Plan', got '%s'", createdPlan.Name)
+		}
+		if createdPlan.ID == "" {
+			t.Error("Expected a plan ID in the response, but it was empty")
+		}
+
+		// Assert: Verify the plan was actually saved to the database
+		savedPlan, err := planRepo.FindByID(ctx, nil, createdPlan.ID)
+		if err != nil {
+			t.Fatalf("Failed to find the created plan in the database: %v", err)
+		}
+		if savedPlan.Credits != 500000 {
+			t.Errorf("Expected saved plan to have 500000 credits, got %d", savedPlan.Credits)
+		}
+	})
+
+	t.Run("Failure for bad request", func(t *testing.T) {
+		// Arrange: Malformed JSON (credits is a string instead of a number)
+		planPayload := `{"name": "Bad-Plan", "credits": "fifty-thousand"}`
+		bodyReader := strings.NewReader(planPayload)
+
+		// Act: Make the POST request
+		req, _ := http.NewRequest("POST", testServer.URL+"/api/v1/plans", bodyReader)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("Content-Type", "application/json")
+
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("Request failed: %v", err)
+		}
+		defer res.Body.Close()
+
+		// Assert: Check the HTTP response status code
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("Expected status 400 Bad Request, got %d", res.StatusCode)
+		}
+	})
 }

@@ -140,7 +140,7 @@ func main() {
 			cfg.AI.OpenAI.APIKey,
 			cfg.AI.OpenAI.BaseURL,
 			cfg.AI.OpenAI.DefaultModel,
-			cfg.AI.MaxOutputTokens, // NEW
+			cfg.AI.MaxOutputTokens,
 		)
 		if err != nil {
 			logger.Warn().Err(err).Msg("[OpenAI Adapter]")
@@ -156,7 +156,7 @@ func main() {
 			cfg.AI.Gemini.APIKey,
 			cfg.AI.Gemini.BaseURL,
 			cfg.AI.Gemini.DefaultModel,
-			cfg.AI.MaxOutputTokens, // NEW
+			cfg.AI.MaxOutputTokens,
 		)
 		if err != nil {
 			logger.Warn().Err(err).Msg("[Gemini Adapter]")
@@ -217,7 +217,7 @@ func main() {
 	// Payment callback server
 	paymentCallbackServer := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
 	// Admin Panel API server
-	adminAPIServer := web.NewServer(statsUC, userUC, subUC, cfg.Admin.APIKey, logger)
+	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, logger)
 
 	mux := http.NewServeMux()
 	paymentCallbackServer.Register(mux)

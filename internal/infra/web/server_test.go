@@ -77,7 +77,7 @@ func TestAuthMiddleware(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Arrange
-			server := NewServer(mockStatsUC, nil, nil, tc.apiKeyInServer, logger)
+			server := NewServer(mockStatsUC, nil, nil, nil, tc.apiKeyInServer, logger)
 			handlerToTest := server.authMiddleware(dummyHandler)
 
 			req := httptest.NewRequest("GET", "/api/v1/stats", nil)

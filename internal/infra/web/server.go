@@ -12,6 +12,7 @@ type Server struct {
 	statsUC usecase.StatsUseCase
 	userUC  usecase.UserUseCase
 	subUC   usecase.SubscriptionUseCase
+	planUC  usecase.PlanUseCase
 	apiKey  string
 	log     *zerolog.Logger
 }
@@ -20,6 +21,7 @@ func NewServer(
 	statsUC usecase.StatsUseCase,
 	userUC usecase.UserUseCase,
 	subUC usecase.SubscriptionUseCase,
+	planUC usecase.PlanUseCase,
 	apiKey string,
 	logger *zerolog.Logger,
 ) *Server {
@@ -27,6 +29,7 @@ func NewServer(
 		statsUC: statsUC,
 		userUC:  userUC,
 		subUC:   subUC,
+		planUC:  planUC,
 		apiKey:  apiKey,
 		log:     logger,
 	}
@@ -40,7 +43,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// A single handler for all /api/v1/users/ routes
 	usersRouter := s.authMiddleware(s.usersRouter())
+	mux.Handle("/api/v1/users", usersRouter)
 	mux.Handle("/api/v1/users/", usersRouter)
+
+	plansRouter := s.authMiddleware(s.plansRouter())
+	mux.Handle("/api/v1/plans", plansRouter)
 }
 
 // authMiddleware provides simple Bearer token authentication for the admin API.
@@ -82,6 +89,21 @@ func (s *Server) usersRouter() http.Handler {
 			usersListHandler(s.userUC)(w, r)
 		} else { // Path is /api/v1/users/{id}
 			userGetHandler(s.userUC, s.subUC)(w, r)
+		}
+	})
+}
+
+// plansRouter acts as a sub-router for /api/v1/plans
+func (s *Server) plansRouter() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// We can add logic for path parameters like /api/v1/plans/{id} here later
+		switch r.Method {
+		case http.MethodGet:
+			plansListHandler(s.planUC)(w, r)
+		case http.MethodPost:
+			plansCreateHandler(s.planUC)(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 }
