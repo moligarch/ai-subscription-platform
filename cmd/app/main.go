@@ -170,7 +170,7 @@ func main() {
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, chatRepo, stateRepo, translator, txManager, logger)
+	userUC := usecase.NewUserUseCase(userRepo, chatRepo, stateRepo, translator, txManager, cfg.Bot.AdminIDs, logger)
 	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, activationCodeRepo, logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, activationCodeRepo, txManager, logger)
 	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, planRepo, priceRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev)
