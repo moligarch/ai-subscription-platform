@@ -47,6 +47,95 @@ func plansCreateHandler(planUC usecase.PlanUseCase) http.HandlerFunc {
 	}
 }
 
+// A struct for the update request body. It's the same as create for a PUT.
+type planUpdateRequest struct {
+	Name            string   `json:"name"`
+	DurationDays    int      `json:"duration_days"`
+	Credits         int64    `json:"credits"`
+	PriceIRR        int64    `json:"price_irr"`
+	SupportedModels []string `json:"supported_models"`
+}
+
+// Handler for updating an existing subscription plan.
+func plansUpdateHandler(planUC usecase.PlanUseCase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// Extract plan ID from URL path: /api/v1/plans/{id}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/plans/")
+		if id == "" {
+			http.Error(w, "Plan ID is required", http.StatusBadRequest)
+			return
+		}
+
+		var req planUpdateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// First, get the existing plan.
+		plan, err := planUC.Get(ctx, id)
+		if err != nil {
+			if err == domain.ErrNotFound {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "Failed to find plan", http.StatusInternalServerError)
+			return
+		}
+
+		// Update the plan's fields with the new data.
+		plan.Name = req.Name
+		plan.DurationDays = req.DurationDays
+		plan.Credits = req.Credits
+		plan.PriceIRR = req.PriceIRR
+		plan.SupportedModels = req.SupportedModels
+
+		// Save the updated plan via the use case.
+		if err := planUC.Update(ctx, plan); err != nil {
+			http.Error(w, "Failed to update plan", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(plan)
+	}
+}
+
+// Handler for deleting an existing subscription plan.
+func plansDeleteHandler(planUC usecase.PlanUseCase) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		// Extract plan ID from URL path: /api/v1/plans/{id}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/plans/")
+		if id == "" {
+			http.Error(w, "Plan ID is required", http.StatusBadRequest)
+			return
+		}
+
+		err := planUC.Delete(ctx, id)
+		if err != nil {
+			switch err {
+			case domain.ErrNotFound, domain.ErrInvalidArgument:
+				http.NotFound(w, r)
+			case domain.ErrSubsciptionWithActiveUser:
+				// 409 Conflict is the appropriate status code when the action
+				// cannot be performed due to the state of the resource.
+				http.Error(w, err.Error(), http.StatusConflict)
+			default:
+				http.Error(w, "Failed to delete plan", http.StatusInternalServerError)
+			}
+			return
+		}
+
+		// A successful deletion returns a 204 No Content response.
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // statsHandler returns an http.HandlerFunc that serves bot statistics.
 func statsHandler(statsUC usecase.StatsUseCase) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

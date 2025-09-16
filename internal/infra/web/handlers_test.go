@@ -3,136 +3,17 @@
 package web
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync"
-	"telegram-ai-subscription/internal/domain"
+	"strings"
 	"telegram-ai-subscription/internal/domain/model"
-	"telegram-ai-subscription/internal/domain/ports/repository"
 	"telegram-ai-subscription/internal/usecase"
 	"testing"
+
+	"github.com/google/uuid"
 )
-
-// --- Mock Repositories (Ports) ---
-
-type mockUserRepo struct {
-	repository.UserRepository // Embed interface for forward compatibility
-	mu                        sync.Mutex
-	users                     []*model.User
-	FindByIDError             error // To simulate errors
-	ListError                 error
-	CountError                error
-}
-
-func (m *mockUserRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
-	if m.ListError != nil {
-		return nil, m.ListError
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	end := offset + limit
-	if end > len(m.users) {
-		end = len(m.users)
-	}
-	if offset >= len(m.users) || offset > end {
-		return []*model.User{}, nil
-	}
-	return m.users[offset:end], nil
-}
-
-func (m *mockUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error) {
-	if m.CountError != nil {
-		return 0, m.CountError
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.users), nil
-}
-
-func (m *mockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
-	if m.FindByIDError != nil {
-		return nil, m.FindByIDError
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, u := range m.users {
-		if u.ID == id {
-			return u, nil
-		}
-	}
-	return nil, domain.ErrUserNotFound
-}
-
-type mockSubRepo struct {
-	repository.SubscriptionRepository // Embed interface
-	mu                                sync.Mutex
-	subs                              []*model.UserSubscription
-	ListByUserIDError                 error
-}
-
-func (m *mockSubRepo) ListByUserID(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
-	if m.ListByUserIDError != nil {
-		return nil, m.ListByUserIDError
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var userSubs []*model.UserSubscription
-	for _, s := range m.subs {
-		if s.UserID == userID {
-			userSubs = append(userSubs, s)
-		}
-	}
-	return userSubs, nil
-}
-
-func (m *mockSubRepo) CountActiveByPlan(ctx context.Context, tx repository.Tx) (map[string]int, error) {
-	// For the test, we can just return an empty map.
-	return make(map[string]int), nil
-}
-
-func (m *mockSubRepo) TotalRemainingCredits(ctx context.Context, tx repository.Tx) (int64, error) {
-	// For the test, we can just return 0.
-	return 0, nil
-}
-
-type mockPaymentRepo struct {
-	repository.PaymentRepository // Embed interface
-	SumByPeriodError             error
-}
-
-func (m *mockPaymentRepo) SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error) {
-	if m.SumByPeriodError != nil {
-		return 0, m.SumByPeriodError
-	}
-	switch period {
-	case "week":
-		return 100, nil
-	case "month":
-		return 1000, nil
-	case "year":
-		return 10000, nil
-	}
-	return 0, nil
-}
-
-type mockPlanRepo struct {
-	repository.SubscriptionPlanRepository // Embed interface
-	mu                                    sync.Mutex
-	plans                                 []*model.SubscriptionPlan
-	ListAllError                          error
-}
-
-func (m *mockPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
-	if m.ListAllError != nil {
-		return nil, m.ListAllError
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.plans, nil
-}
 
 // --- Handler Tests ---
 
@@ -262,9 +143,9 @@ func TestUserHandlers(t *testing.T) {
 func TestPlansListHandler(t *testing.T) {
 	// Arrange: Create real use case with mocked repositories
 	planRepo := &mockPlanRepo{
-		plans: []*model.SubscriptionPlan{
-			{ID: "plan-1", Name: "Pro"},
-			{ID: "plan-2", Name: "Standard"},
+		plans: map[string]*model.SubscriptionPlan{ // MODIFIED: Was a slice, now a map.
+			"plan-1": {ID: "plan-1", Name: "Pro"},
+			"plan-2": {ID: "plan-2", Name: "Standard"},
 		},
 	}
 	// The List method in PlanUseCase only depends on the PlanRepository
@@ -302,5 +183,111 @@ func TestPlansListHandler(t *testing.T) {
 			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusInternalServerError)
 		}
 		planRepo.ListAllError = nil // Reset for other tests
+	})
+}
+
+func TestPlansCreateHandler(t *testing.T) {
+	// Arrange for all subtests
+	planRepo := &mockPlanRepo{
+		plans: make(map[string]*model.SubscriptionPlan),
+	}
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, newTestLogger())
+	handler := plansCreateHandler(planUC)
+
+	t.Run("Success", func(t *testing.T) {
+		planPayload := `{"name": "New-Unit-Plan", "duration_days": 15, "credits": 100, "price_irr": 10000}`
+		bodyReader := strings.NewReader(planPayload)
+
+		req := httptest.NewRequest("POST", "/api/v1/plans", bodyReader)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusCreated {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusCreated)
+		}
+
+		var createdPlan model.SubscriptionPlan
+		json.Unmarshal(rr.Body.Bytes(), &createdPlan)
+		if createdPlan.Name != "New-Unit-Plan" {
+			t.Errorf("handler returned wrong plan name: got %s", createdPlan.Name)
+		}
+	})
+
+	t.Run("Failure for bad JSON", func(t *testing.T) {
+		planPayload := `{"name": "Bad-JSON",` // Intentionally broken JSON
+		bodyReader := strings.NewReader(planPayload)
+
+		req := httptest.NewRequest("POST", "/api/v1/plans", bodyReader)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusBadRequest {
+			t.Errorf("handler returned wrong status code for bad json: got %v want %v", status, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("Failure for invalid data", func(t *testing.T) {
+		// Payload is valid JSON, but has no name, which the use case will reject.
+		planPayload := `{"duration_days": 15, "credits": 100, "price_irr": 10000}`
+		bodyReader := strings.NewReader(planPayload)
+
+		req := httptest.NewRequest("POST", "/api/v1/plans", bodyReader)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusBadRequest {
+			t.Errorf("handler returned wrong status code for invalid data: got %v want %v", status, http.StatusBadRequest)
+		}
+	})
+}
+
+func TestPlansUpdateHandler(t *testing.T) {
+	// Arrange for all subtests
+	planID := uuid.NewString()
+	planRepo := &mockPlanRepo{
+		plans: map[string]*model.SubscriptionPlan{
+			planID: {ID: planID, Name: "Old Name", PriceIRR: 100},
+		},
+	}
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, newTestLogger())
+	handler := plansUpdateHandler(planUC)
+
+	t.Run("Success", func(t *testing.T) {
+		updatePayload := `{"name": "New Name", "price_irr": 200, "duration_days": 30, "credits": 100}`
+		bodyReader := strings.NewReader(updatePayload)
+		req := httptest.NewRequest("PUT", "/api/v1/plans/"+planID, bodyReader)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusOK {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
+		}
+
+		var updatedPlan model.SubscriptionPlan
+		json.Unmarshal(rr.Body.Bytes(), &updatedPlan)
+		if updatedPlan.Name != "New Name" {
+			t.Errorf("expected name to be 'New Name', got '%s'", updatedPlan.Name)
+		}
+		if planRepo.plans[planID].PriceIRR != 200 {
+			t.Error("mock repository data was not updated")
+		}
+	})
+
+	t.Run("Failure for plan not found", func(t *testing.T) {
+		updatePayload := `{"name": "New Name", "price_irr": 200}`
+		bodyReader := strings.NewReader(updatePayload)
+		nonExistingPlanID := uuid.NewString()
+		req := httptest.NewRequest("PUT", "/api/v1/plans/"+nonExistingPlanID, bodyReader)
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if status := rr.Code; status != http.StatusNotFound {
+			t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusNotFound)
+		}
 	})
 }

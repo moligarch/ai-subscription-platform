@@ -291,3 +291,58 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 		}
 	})
 }
+
+func TestPlansUpdateAPI_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode.")
+	}
+	defer cleanup(t)
+	ctx := context.Background()
+	logger := zerolog.New(nil)
+	const apiKey = "integration-test-key"
+
+	// Arrange: Setup and seed an initial plan
+	planRepo := postgres.NewPlanRepo(testPool)
+	initialPlan, _ := model.NewSubscriptionPlan("", "Initial Plan", 30, 100, 1000)
+	if err := planRepo.Save(ctx, nil, initialPlan); err != nil {
+		t.Fatalf("failed to save initial plan: %v", err)
+	}
+
+	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
+	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	testServer := httptest.NewServer(mux)
+	defer testServer.Close()
+
+	// Define the update payload
+	updatePayload := `{"name": "Updated Plan Name", "duration_days": 45, "credits": 200, "price_irr": 2000, "supported_models": ["gpt-4o"]}`
+	bodyReader := strings.NewReader(updatePayload)
+
+	// Act: Make the PUT request
+	req, _ := http.NewRequest("PUT", testServer.URL+"/api/v1/plans/"+initialPlan.ID, bodyReader)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	// Assert: Check the HTTP response
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("Expected status 200 OK, got %d", res.StatusCode)
+	}
+
+	// Assert: Verify the plan was actually updated in the database
+	savedPlan, err := planRepo.FindByID(ctx, nil, initialPlan.ID)
+	if err != nil {
+		t.Fatalf("Failed to find the updated plan in the database: %v", err)
+	}
+	if savedPlan.Name != "Updated Plan Name" {
+		t.Errorf("Expected saved plan name to be 'Updated Plan Name', got '%s'", savedPlan.Name)
+	}
+	if savedPlan.DurationDays != 45 {
+		t.Errorf("Expected saved plan duration to be 45, got %d", savedPlan.DurationDays)
+	}
+}

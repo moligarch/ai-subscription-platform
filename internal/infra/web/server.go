@@ -47,7 +47,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("/api/v1/users/", usersRouter)
 
 	plansRouter := s.authMiddleware(s.plansRouter())
-	mux.Handle("/api/v1/plans", plansRouter)
+	mux.Handle("/api/v1/plans", plansRouter)  // Handles POST and GET-all
+	mux.Handle("/api/v1/plans/", plansRouter) // Handles PUT, DELETE, GET-one
 }
 
 // authMiddleware provides simple Bearer token authentication for the admin API.
@@ -96,12 +97,28 @@ func (s *Server) usersRouter() http.Handler {
 // plansRouter acts as a sub-router for /api/v1/plans
 func (s *Server) plansRouter() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// We can add logic for path parameters like /api/v1/plans/{id} here later
+		path := strings.TrimPrefix(r.URL.Path, "/api/v1/plans")
+		path = strings.TrimSuffix(path, "/")
+
+		// Route /api/v1/plans (no ID)
+		if path == "" {
+			switch r.Method {
+			case http.MethodGet:
+				plansListHandler(s.planUC)(w, r)
+			case http.MethodPost:
+				plansCreateHandler(s.planUC)(w, r)
+			default:
+				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+
+		// Route /api/v1/plans/{id}
 		switch r.Method {
-		case http.MethodGet:
-			plansListHandler(s.planUC)(w, r)
-		case http.MethodPost:
-			plansCreateHandler(s.planUC)(w, r)
+		case http.MethodPut:
+			plansUpdateHandler(s.planUC)(w, r)
+		case http.MethodDelete:
+			plansDeleteHandler(s.planUC)(w, r)
 		default:
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
