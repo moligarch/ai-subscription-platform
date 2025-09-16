@@ -81,7 +81,7 @@ func setupTestDatabase() (containerID, dsn string) {
 		"-e", fmt.Sprintf("POSTGRES_DB=%s", dbName),
 		"-e", fmt.Sprintf("POSTGRES_USER=%s", dbUser),
 		"-e", fmt.Sprintf("POSTGRES_PASSWORD=%s", dbPassword),
-		"postgres:14-alpine",
+		"postgres:14",
 	)
 
 	var out bytes.Buffer

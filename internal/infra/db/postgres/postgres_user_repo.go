@@ -83,7 +83,7 @@ SELECT id, telegram_id, username, full_name, phone_number, registration_status, 
 	var u model.User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrNotFound
+			return nil, domain.ErrUserNotFound
 		}
 		return nil, domain.ErrReadDatabaseRow
 	}

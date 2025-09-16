@@ -18,7 +18,7 @@
       "mode": "test",
       "program": "${fileDirname}",
       "buildFlags": "-tags=integration",
-      "args": ["-test.run", "${selectedText}"]
+      "args": ["-test.run", "${selectedText}","-test.v"]
     }
   ]
 }

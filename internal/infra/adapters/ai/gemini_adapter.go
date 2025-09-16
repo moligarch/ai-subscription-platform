@@ -112,7 +112,7 @@ func (g *GeminiAdapter) chatCore(ctx context.Context, model string, messages []a
 	chat, err := g.client.Chats.Create(
 		ctx,
 		modelOrDefault(model, g.defaultModel),
-		&genai.GenerateContentConfig{ // NEW
+		&genai.GenerateContentConfig{
 			MaxOutputTokens: int32(g.maxOut),
 		},
 		history,

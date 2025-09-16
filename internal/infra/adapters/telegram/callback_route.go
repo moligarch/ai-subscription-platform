@@ -247,8 +247,8 @@ func (r *RealTelegramBotAdapter) privacyToggleCBRoute(ctx context.Context, id in
 	if err != nil {
 		r.log.Error().Err(err).Int64("tg_id", id).Msg("failed to toggle message storage")
 		_ = r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_toggle_privacy"),
+			ChatID: id,
+			Text:   r.translator.T("error_toggle_privacy"),
 		}) // Localized
 	}
 
@@ -328,7 +328,7 @@ func (r *RealTelegramBotAdapter) viewPlanCBRoute(ctx context.Context, chatID int
 		modelsStr,
 	)
 
-	fullMessage := fmt.Sprintf("%s\n\n%s", header, body)
+	fullMessage := r.EscapeMarkdownV2(fmt.Sprintf("%s\n\n%s", header, body))
 
 	// Build the new purchase option buttons
 	markup := adapter.ReplyMarkup{

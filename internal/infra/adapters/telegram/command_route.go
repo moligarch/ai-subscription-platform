@@ -262,7 +262,7 @@ func (r *RealTelegramBotAdapter) handleSettingsCommand(ctx context.Context, mess
 	if err != nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
 			ChatID: message.Chat.ID,
-			Text:   r.translator.T("error_generic"),
+			Text:   r.translator.T("error_user_not_found"),
 		})
 	}
 	var b strings.Builder
