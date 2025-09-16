@@ -20,8 +20,8 @@ type BotFacade struct {
 	SubscriptionUC usecase.SubscriptionUseCase
 	PaymentUC      usecase.PaymentUseCase
 	ChatUC         usecase.ChatUseCase
-
-	callbackURL string
+	BroadcastUC    usecase.BroadcastUseCase
+	callbackURL    string
 }
 
 func NewBotFacade(
@@ -40,6 +40,10 @@ func NewBotFacade(
 		ChatUC:         chatUC,
 		callbackURL:    callbackURL,
 	}
+}
+
+func (b *BotFacade) SetBroadcastUseCase(uc usecase.BroadcastUseCase) {
+	b.BroadcastUC = uc
 }
 
 // HandleStart ensures user exists and returns quick help text.
@@ -317,4 +321,17 @@ func (b *BotFacade) HandleGenerateCodes(ctx context.Context, planID string, coun
 		return nil, domain.ErrOperationFailed
 	}
 	return codes, nil
+}
+
+func (b *BotFacade) HandleCast(ctx context.Context, message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		return "Usage: /cast <message>", nil
+	}
+
+	count, err := b.BroadcastUC.BroadcastMessage(ctx, message)
+	if err != nil {
+		return "Error starting broadcast.", err
+	}
+
+	return fmt.Sprintf("✅ Broadcast queued. The message will be sent to approximately %d users in the background.", count), nil
 }

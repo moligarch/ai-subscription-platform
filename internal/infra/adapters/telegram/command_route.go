@@ -38,6 +38,7 @@ func (r *RealTelegramBotAdapter) commandRoutes() map[string]commandHandler {
 		"update_plan":    r.adminOnly(r.handleUpdatePlanCommand),
 		"update_pricing": r.adminOnly(r.handleUpdatePricingCommand),
 		"generate_code":  r.adminOnly(r.handleGenerateCodeCommand),
+		"cast":           r.adminOnly(r.handleCastCommand),
 	}
 }
 
@@ -47,8 +48,8 @@ func (r *RealTelegramBotAdapter) adminOnly(next commandHandler) commandHandler {
 		if _, isAdmin := r.adminIDsMap[message.From.ID]; !isAdmin {
 			metrics.IncAdminCommand("/"+message.Command(), "unauthorized")
 			return r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    message.Chat.ID,
-				Text:      r.translator.T("error_unauthorized"),
+				ChatID: message.Chat.ID,
+				Text:   r.translator.T("error_unauthorized"),
 			}) // Localized
 		}
 		metrics.IncAdminCommand("/"+message.Command(), "authorized")
@@ -505,4 +506,24 @@ func (r *RealTelegramBotAdapter) handleConversationalReply(ctx context.Context, 
 			Text:   r.translator.T("error_generic"),
 		})
 	}
+}
+
+func (r *RealTelegramBotAdapter) handleCastCommand(ctx context.Context, message *tgbotapi.Message) error {
+	broadcastMessage := message.CommandArguments()
+
+	reply, err := r.facade.HandleCast(ctx, broadcastMessage)
+	if err != nil {
+		r.log.Error().Err(err).Msg("failed to handle cast command")
+		// Send a generic error back to the admin
+		return r.SendMessage(ctx, adapter.SendMessageParams{
+			ChatID: message.Chat.ID,
+			Text:   "An error occurred while starting the broadcast.",
+		})
+	}
+
+	// Send the confirmation message back to the admin
+	return r.SendMessage(ctx, adapter.SendMessageParams{
+		ChatID: message.Chat.ID,
+		Text:   reply,
+	})
 }

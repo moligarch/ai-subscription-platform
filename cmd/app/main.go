@@ -181,7 +181,6 @@ func main() {
 		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
 	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, txManager, logger)
-
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
 
 	// Bot facade (used by telegram adapter)
@@ -193,6 +192,13 @@ func main() {
 		logger.Fatal().Err(err).Msg("telegram adapter")
 	}
 	defer botAdapter.StopPolling() // ensure we stop cleanly on shutdown
+
+	appWorkerPool := worker.NewPool(cfg.Bot.Workers)
+	appWorkerPool.Start(ctx)
+	defer appWorkerPool.Stop()
+
+	broadcastUC := usecase.NewBroadcastUseCase(userRepo, botAdapter, appWorkerPool, logger)
+	facade.SetBroadcastUseCase(broadcastUC)
 
 	if strings.ToLower(cfg.Bot.Mode) != "polling" {
 		logger.Warn().Str("mode", cfg.Bot.Mode).Msg("bot.mode not implemented; using polling")
@@ -250,9 +256,6 @@ func main() {
 
 	// ---- Background workers ----
 	go startMetricsCollector(ctx, pool, subRepo, logger)
-	appWorkerPool := worker.NewPool(cfg.Bot.Workers) // Use the same worker count as the bot
-	appWorkerPool.Start(ctx)
-	defer appWorkerPool.Stop()
 
 	// Notification worker: check for expiring subs every 6 hours
 	notificationWorker := sched.NewNotificationWorker(6*time.Hour, notifUC, logger)

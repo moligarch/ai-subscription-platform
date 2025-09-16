@@ -123,15 +123,26 @@ func (r *userRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, sin
 }
 
 func (r *userRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
-	if limit <= 0 {
-		limit = 50 // Default limit
-	}
-	const q = `
+	q := `
 SELECT id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
        allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
-  FROM users ORDER BY registered_at DESC OFFSET $1 LIMIT $2;`
+  FROM users ORDER BY registered_at DESC`
 
-	rows, err := queryRows(ctx, r.pool, tx, q, offset, limit)
+	var args []interface{}
+
+	if limit == 0 {
+		// Case 1: limit is exactly 0. Fetch all users, no LIMIT or OFFSET.
+	} else {
+		// Case 2: limit is not 0. This is a paginated query.
+		if limit < 0 {
+			// Sub-case: limit is negative. Use the default page size.
+			limit = 50
+		}
+		q += " OFFSET $1 LIMIT $2"
+		args = append(args, offset, limit)
+	}
+
+	rows, err := queryRows(ctx, r.pool, tx, q, args...)
 	if err != nil {
 		return nil, domain.ErrOperationFailed
 	}
