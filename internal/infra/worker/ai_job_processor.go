@@ -7,8 +7,8 @@ import (
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/domain/ports/adapter"
 	"telegram-ai-subscription/internal/domain/ports/repository"
+	"telegram-ai-subscription/internal/domain/ports/usecase"
 	"telegram-ai-subscription/internal/infra/metrics"
-	"telegram-ai-subscription/internal/usecase"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,7 +20,7 @@ type AIJobProcessor struct {
 	jobsRepo    repository.AIJobRepository
 	chatRepo    repository.ChatSessionRepository
 	pricingRepo repository.ModelPricingRepository
-	subUC       usecase.SubscriptionUseCase
+	subManager  usecase.SubscriptionManager
 	aiAdapter   adapter.AIServiceAdapter
 	botAdapter  adapter.TelegramBotAdapter
 	tm          repository.TransactionManager
@@ -31,7 +31,7 @@ func NewAIJobProcessor(
 	jobsRepo repository.AIJobRepository,
 	chatRepo repository.ChatSessionRepository,
 	pricingRepo repository.ModelPricingRepository,
-	subUC usecase.SubscriptionUseCase,
+	subManager usecase.SubscriptionManager,
 	aiAdapter adapter.AIServiceAdapter,
 	botAdapter adapter.TelegramBotAdapter,
 	tm repository.TransactionManager,
@@ -41,7 +41,7 @@ func NewAIJobProcessor(
 		jobsRepo:    jobsRepo,
 		chatRepo:    chatRepo,
 		pricingRepo: pricingRepo,
-		subUC:       subUC,
+		subManager:  subManager,
 		aiAdapter:   aiAdapter,
 		botAdapter:  botAdapter,
 		tm:          tm,
@@ -112,7 +112,7 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 	if err != nil {
 		return fmt.Errorf("pricing not found: %w", err)
 	}
-	activeSub, err := p.subUC.GetActive(ctx, session.UserID)
+	activeSub, err := p.subManager.GetActive(ctx, session.UserID)
 	if err != nil {
 		return domain.ErrNoActiveSubscription
 	}
@@ -188,7 +188,7 @@ func (p *AIJobProcessor) handleJob(ctx context.Context, job *model.AIJob) error 
 		// Deduct exact cost
 		spent := int64(usage.PromptTokens)*pricing.InputTokenPriceMicros +
 			int64(usage.CompletionTokens)*pricing.OutputTokenPriceMicros
-		if _, err := p.subUC.DeductCredits(ctx, session.UserID, spent); err != nil {
+		if _, err := p.subManager.DeductCredits(ctx, session.UserID, spent); err != nil {
 			return err
 		}
 
