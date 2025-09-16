@@ -218,4 +218,35 @@ func TestSubscriptionRepo_Integration(t *testing.T) {
 			t.Errorf("Expected 1 finished sub, but got %d", counts[model.SubscriptionStatusFinished])
 		}
 	})
+
+	t.Run("should list all subscriptions for a user", func(t *testing.T) {
+		setupPrerequisites(t)
+
+		// Arrange: Create 2 subs for user1 and 1 sub for user2
+		sub1 := &model.UserSubscription{ID: uuid.NewString(), UserID: user1.ID, PlanID: proPlan.ID, Status: model.SubscriptionStatusActive}
+		sub2 := &model.UserSubscription{ID: uuid.NewString(), UserID: user1.ID, PlanID: stdPlan.ID, Status: model.SubscriptionStatusFinished}
+		sub3 := &model.UserSubscription{ID: uuid.NewString(), UserID: user2.ID, PlanID: proPlan.ID, Status: model.SubscriptionStatusActive}
+		repo.Save(ctx, nil, sub1)
+		repo.Save(ctx, nil, sub2)
+		repo.Save(ctx, nil, sub3)
+
+		// Act
+		user1Subs, err := repo.ListByUserID(ctx, nil, user1.ID)
+		if err != nil {
+			t.Fatalf("ListByUserID for user1 failed: %v", err)
+		}
+
+		user2Subs, err := repo.ListByUserID(ctx, nil, user2.ID)
+		if err != nil {
+			t.Fatalf("ListByUserID for user2 failed: %v", err)
+		}
+
+		// Assert
+		if len(user1Subs) != 2 {
+			t.Errorf("expected 2 subscriptions for user1, but got %d", len(user1Subs))
+		}
+		if len(user2Subs) != 1 {
+			t.Errorf("expected 1 subscription for user2, but got %d", len(user2Subs))
+		}
+	})
 }

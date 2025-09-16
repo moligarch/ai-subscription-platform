@@ -493,7 +493,16 @@ func (r *MockSubscriptionRepo) ListByUserID(ctx context.Context, tx repository.T
 	if r.ListByUserIDFunc != nil {
 		return r.ListByUserIDFunc(ctx, tx, userID)
 	}
-	return nil, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.UserSubscription
+	for _, s := range r.data {
+		if s.UserID == userID {
+			cp := *s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
 }
 
 func (r *MockSubscriptionRepo) FindExpiring(ctx context.Context, tx repository.Tx, withinDays int) ([]*model.UserSubscription, error) {
