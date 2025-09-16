@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -203,6 +204,9 @@ func usersListHandler(userUC usecase.UserUseCase) http.HandlerFunc {
 		// Fetch data from the use case
 		users, err := userUC.List(ctx, offset, limit)
 		if err != nil {
+			if errors.Is(err, domain.ErrNotFound) {
+				http.Error(w, "No users found.", http.StatusNoContent)
+			}
 			http.Error(w, "Failed to list users", http.StatusInternalServerError)
 			return
 		}

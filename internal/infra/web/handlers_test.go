@@ -85,7 +85,7 @@ func TestUserHandlers(t *testing.T) {
 			{ID: "sub-1", UserID: "user-1"},
 		},
 	}
-	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, newTestLogger())
+	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, nil, newTestLogger())
 	subUC := usecase.NewSubscriptionUseCase(subRepo, nil, nil, nil, newTestLogger())
 
 	t.Run("usersListHandler success", func(t *testing.T) {
