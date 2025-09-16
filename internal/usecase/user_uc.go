@@ -53,6 +53,7 @@ type userUC struct {
 	stateRepo  repository.StateRepository
 	translator *i18n.Translator
 	tm         repository.TransactionManager
+	adminIDMap map[int64]struct{}
 	log        *zerolog.Logger
 }
 
@@ -62,14 +63,21 @@ func NewUserUseCase(
 	stateRepo repository.StateRepository,
 	translator *i18n.Translator,
 	tm repository.TransactionManager,
+	adminIDs []int64,
 	logger *zerolog.Logger,
 ) *userUC {
+	adminMap := make(map[int64]struct{})
+	for _, id := range adminIDs {
+		adminMap[id] = struct{}{}
+	}
+
 	return &userUC{
 		users:      users,
 		sessions:   sessions,
 		stateRepo:  stateRepo,
 		translator: translator,
 		tm:         tm,
+		adminIDMap: adminMap,
 		log:        logger,
 	}
 }
@@ -90,12 +98,18 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 			u.log.Warn().Err(err).Int64("tg_id", tgID).Msg("Failed to find user by Telegram ID")
 		}
 
+		_, isAdmin := u.adminIDMap[tgID]
+
 		if usr != nil {
-			// If the user exists, we must update their state and SAVE the changes.
+			// Logic for EXISTING users
+			usr.Touch()
 			if usr.Username != username && username != "" {
 				usr.Username = username
 			}
-			usr.Touch() // Update the last active time.
+			// Sync admin status for existing users
+			if usr.IsAdmin != isAdmin {
+				usr.IsAdmin = isAdmin
+			}
 
 			// The missing Save call is now restored.
 			if err = u.users.Save(ctx, tx, usr); err != nil {
@@ -111,6 +125,8 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 		if err != nil {
 			return err
 		}
+
+		nu.IsAdmin = isAdmin
 		if err := u.users.Save(ctx, tx, nu); err != nil {
 			return err
 		}

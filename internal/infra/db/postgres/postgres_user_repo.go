@@ -36,7 +36,8 @@ INSERT INTO users (
   phone_number = EXCLUDED.phone_number,
   registration_status = EXCLUDED.registration_status,
   last_active_at = EXCLUDED.last_active_at,
-  allow_message_storage = EXCLUDED.allow_message_storage;
+  allow_message_storage = EXCLUDED.allow_message_storage,
+  is_admin = EXCLUDED.is_admin;
 `
 	_, err := execSQL(ctx, r.pool, tx, q, u.ID, u.TelegramID, u.Username, u.FullName, u.PhoneNumber, u.RegistrationStatus, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
 	if err != nil {
