@@ -1,26 +1,30 @@
-networks:
-  lan_net:
-
 services:
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+
   postgres:
     image: postgres:14
     container_name: postgres
     environment:
-      POSTGRES_USER: app
-      POSTGRES_PASSWORD: app
-      POSTGRES_DB: appdb
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
       TZ: Asia/Tehran
       PGTZ: Asia/Tehran
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    command: ["postgres","-c","listen_addresses=*"]
     restart: unless-stopped
-    networks:
-      - lan_net
-        # ipv4_address: 192.168.10.211
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app -d appdb -h 127.0.0.1 -p 5432"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 20s
       timeout: 5s
       retries: 10
@@ -28,25 +32,27 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    command: ["redis-server","--appendonly","no","--bind","0.0.0.0"]
     restart: unless-stopped
-    networks:
-      - lan_net
-        # ipv4_address: 192.168.10.212
 
   prometheus:
     image: prom/prometheus:v2.53.1
     container_name: prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.retention.time=15d
-      - --web.enable-lifecycle
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
-    networks:
-      - lan_net
-        # ipv4_address: 192.168.10.213
+
+  grafana:
+    image: grafana/grafana-enterprise
+    container_name: grafana
+    restart: unless-stopped
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
 
   app:
     build:
@@ -54,15 +60,8 @@ services:
       dockerfile: Dockerfile
     image: telegram-ai:latest
     container_name: telegram-ai
-    volumes:
-      - ./config.yaml:/etc/app/config.yaml:ro         # easy edits
     env_file:
-      - .env
-    environment:
-      TZ: Asia/Tehran
-      # HTTPS_PROXY: http://192.168.10.1:10809
-      # HTTP_PROXY:  http://192.168.10.1:10809
-      # NO_PROXY:    127.0.0.1,localhost,192.168.10.0/24
+      - .env.prod
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,9 +73,8 @@ services:
         limits:
           cpus: "2.0"
           memory: 2g
-    networks:
-      - lan_net
-        # ipv4_address: 192.168.10.210
 
 volumes:
   pgdata:
+  caddy_data:
+  grafana_data:
