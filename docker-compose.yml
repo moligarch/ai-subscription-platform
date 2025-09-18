@@ -1,3 +1,7 @@
+networks:
+  app_net:
+    driver: bridge
+
 services:
   caddy:
     image: caddy:2
@@ -9,6 +13,8 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
+    networks:
+      - app_net
 
   postgres:
     image: postgres:14
@@ -17,8 +23,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      TZ: Asia/Tehran
-      PGTZ: Asia/Tehran
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -28,11 +32,15 @@ services:
       interval: 20s
       timeout: 5s
       retries: 10
+    networks:
+      - app_net
 
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
+    networks:
+      - app_net
 
   prometheus:
     image: prom/prometheus:v2.53.1
@@ -42,6 +50,8 @@ services:
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     restart: unless-stopped
+    networks:
+      - app_net
 
   grafana:
     image: grafana/grafana-enterprise
@@ -53,6 +63,8 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+    networks:
+      - app_net
 
   app:
     build:
@@ -61,7 +73,7 @@ services:
     image: telegram-ai:latest
     container_name: telegram-ai
     env_file:
-      - .env.prod
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,6 +85,8 @@ services:
         limits:
           cpus: "2.0"
           memory: 2g
+    networks:
+      - app_net
 
 volumes:
   pgdata:

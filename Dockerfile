@@ -30,10 +30,14 @@ RUN go build -o /out/app -ldflags="-s -w -X main.version=${VERSION} -X main.comm
 # Use a distroless static image for the final stage. It contains only our app,
 # its dependencies, and essential libraries like ca-certificates and tzdata.
 # It has no shell or other programs, drastically reducing the attack surface.
-FROM gcr.io/distroless/static-debian12
+FROM alpine:latest
 
-# Non-root user for security. Distroless images have a 'nonroot' user by default (uid 65532).
-USER nonroot
+# Install minimal runtime dependencies: CA certs for TLS and tzdata for correct time.
+RUN apk add --no-cache ca-certificates tzdata
+
+# Non-root user for security. This works the same on Alpine.
+RUN addgroup -S app && adduser -S -G app app
+USER app
 
 WORKDIR /app
 COPY --from=builder /out/app /app/app
@@ -41,11 +45,6 @@ COPY --from=builder /out/app /app/app
 # Config path and exposed port remain the same.
 ENV CONFIG_PATH=/etc/app/config.yaml
 EXPOSE 8080
-
-# NOTE: The standard HEALTHCHECK cannot use `curl` as it doesn't exist in a distroless image.
-# Docker's built-in health check can be configured to check the port directly if needed,
-# or you can build a small health-check utility into your Go application itself.
-# For now, we'll omit it in favor of the significant security gain.
 
 ENTRYPOINT ["/app/app"]
 CMD ["--config", "/etc/app/config.yaml"]
