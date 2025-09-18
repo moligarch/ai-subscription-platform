@@ -25,7 +25,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
 		mockRegStateRepo := NewMockConversationStateRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		// Create the initial state
 		originalUser := &model.User{
@@ -68,7 +68,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		mockUserRepo := NewMockUserRepo()
 		mockChatRepo := NewMockChatSessionRepo()
 		mockRegStateRepo := NewMockConversationStateRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		const newTelegramID = 54321
 		const newUsername = "new_user"
@@ -101,7 +101,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		}
 		mockChatRepo := NewMockChatSessionRepo()
 		mockRegStateRepo := NewMockConversationStateRepo()
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		// --- Act ---
 		_, err := uc.RegisterOrFetch(ctx, 12345, "any_user")
@@ -120,7 +120,7 @@ func TestUserUseCase_RegisterOrFetch(t *testing.T) {
 		mockUserRepo.CountUsersFunc = func(ctx context.Context, tx repository.Tx) (int, error) {
 			return 99, nil
 		}
-		uc := usecase.NewUserUseCase(mockUserRepo, nil, nil, nil, nil, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, nil, nil, nil, nil, nil, testLogger)
 
 		count, err := uc.Count(ctx)
 		if err != nil {
@@ -162,7 +162,7 @@ func TestUserUseCase_ToggleMessageStorage(t *testing.T) {
 		}
 
 		// Pass the new mock to the constructor
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		// --- Act ---
 		err := uc.ToggleMessageStorage(ctx, 123)
@@ -200,7 +200,7 @@ func TestUserUseCase_Counting(t *testing.T) {
 			return 42, nil
 		}
 
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		// --- Act ---
 		count, err := uc.CountInactiveSince(ctx, time.Now())
@@ -227,7 +227,7 @@ func TestUserUseCase_RegistrationFlow(t *testing.T) {
 		mockChatRepo := NewMockChatSessionRepo()
 		mockRegStateRepo := NewMockConversationStateRepo()
 
-		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, testLogger)
+		uc := usecase.NewUserUseCase(mockUserRepo, mockChatRepo, mockRegStateRepo, testTranslator, mockTxManager, nil, testLogger)
 
 		const tgID = int64(12345)
 		const fullName = "Test"

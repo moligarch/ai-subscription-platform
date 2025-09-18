@@ -31,7 +31,8 @@ type LogConfig struct {
 }
 
 type AdminConfig struct {
-	Port int `yaml:"port"`
+	Port   int    `yaml:"port"`
+	APIKey string `yaml:"api_key"`
 }
 
 type DatabaseConfig struct {
@@ -172,6 +173,7 @@ func LoadConfig() (*Config, error) {
 	if err := yaml.Unmarshal(b, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+	cfg.Runtime.Dev = dev
 
 	// Step 2: Override with environment variables for secrets and key settings
 	// Bot
@@ -204,6 +206,9 @@ func LoadConfig() (*Config, error) {
 	if callbackURL := os.Getenv("PAYMENT_ZARINPAL_CALLBACK_URL"); callbackURL != "" {
 		cfg.Payment.ZarinPal.CallbackURL = callbackURL
 	}
+	if apiKey := os.Getenv("ADMIN_API_KEY"); apiKey != "" {
+		cfg.Admin.APIKey = apiKey
+	}
 
 	// Step 3: Apply defaults for non-sensitive values
 	if cfg.Bot.Workers <= 0 {
@@ -229,8 +234,8 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Step 4: Final validation (will now use the merged config)
-	cfg.Runtime.Dev = dev
-	if err := cfg.Validate(); err != nil {
+
+	if err := cfg.Validate(); err != nil && !cfg.Runtime.Dev {
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
 

@@ -228,6 +228,7 @@ type MockUserRepo struct {
 	FindByIDFunc           func(ctx context.Context, tx repository.Tx, id string) (*model.User, error)
 	CountUsersFunc         func(ctx context.Context, tx repository.Tx) (int, error)
 	CountInactiveUsersFunc func(ctx context.Context, tx repository.Tx, olderThan time.Time) (int, error)
+	ListFunc               func(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error)
 }
 
 var _ repository.UserRepository = (*MockUserRepo)(nil)
@@ -262,7 +263,7 @@ func (r *MockUserRepo) FindByTelegramID(ctx context.Context, tx repository.Tx, t
 		cp := *u
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrUserNotFound
 }
 
 func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
@@ -275,7 +276,7 @@ func (r *MockUserRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 		cp := *u
 		return &cp, nil
 	}
-	return nil, domain.ErrNotFound
+	return nil, domain.ErrUserNotFound
 }
 
 func (r *MockUserRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error) {
@@ -300,6 +301,25 @@ func (r *MockUserRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx,
 		}
 	}
 	return n, nil
+}
+
+func (r *MockUserRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	if r.ListFunc != nil {
+		return r.ListFunc(ctx, tx, offset, limit)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	users := make([]*model.User, 0, len(r.byID))
+	for _, u := range r.byID {
+		cp := *u
+		users = append(users, &cp)
+	}
+	if len(users) == 0 {
+		return nil, domain.ErrNotFound
+	}
+	// Note: This mock doesn't implement pagination, it returns all users.
+	return users, nil
 }
 
 // ---- Mock SubscriptionPlanRepository ----
@@ -383,6 +403,7 @@ type MockSubscriptionRepo struct {
 	FindActiveByUserFunc        func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error)
 	FindReservedByUserFunc      func(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error)
 	FindByIDFunc                func(ctx context.Context, tx repository.Tx, id string) (*model.UserSubscription, error)
+	ListByUserIDFunc            func(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error)
 	FindExpiringFunc            func(ctx context.Context, tx repository.Tx, within int) ([]*model.UserSubscription, error)
 	CountActiveByPlanFunc       func(ctx context.Context, tx repository.Tx) (map[string]int, error)
 	TotalRemainingCreditsFunc   func(ctx context.Context, tx repository.Tx) (int64, error)
@@ -470,7 +491,22 @@ func (r *MockSubscriptionRepo) FindByID(ctx context.Context, tx repository.Tx, i
 	return nil, nil
 }
 
-// Replace the existing FindExpiring with this
+func (r *MockSubscriptionRepo) ListByUserID(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
+	if r.ListByUserIDFunc != nil {
+		return r.ListByUserIDFunc(ctx, tx, userID)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []*model.UserSubscription
+	for _, s := range r.data {
+		if s.UserID == userID {
+			cp := *s
+			out = append(out, &cp)
+		}
+	}
+	return out, nil
+}
+
 func (r *MockSubscriptionRepo) FindExpiring(ctx context.Context, tx repository.Tx, withinDays int) ([]*model.UserSubscription, error) {
 	if r.FindExpiringFunc != nil {
 		return r.FindExpiringFunc(ctx, tx, withinDays)

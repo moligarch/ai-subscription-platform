@@ -122,17 +122,15 @@ func (r *RealTelegramBotAdapter) chatEndCBRoute(ctx context.Context, id int64, _
 	user, err := r.facade.UserUC.GetByTelegramID(ctx, id)
 	if err != nil || user == nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_user_not_found"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_user_not_found"),
 		}) // Localized
 	}
 	sess, err := r.facade.ChatUC.FindActiveSession(ctx, user.ID)
 	if err != nil || sess == nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_no_active_chat"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_no_active_chat"),
 		}) // Localized
 	}
 
@@ -142,9 +140,8 @@ func (r *RealTelegramBotAdapter) chatEndCBRoute(ctx context.Context, id int64, _
 	}
 
 	return r.SendMessage(ctx, adapter.SendMessageParams{
-		ChatID:    id,
-		Text:      text,
-		ParseMode: tgbotapi.ModeMarkdownV2,
+		ChatID: id,
+		Text:   text,
 	}) // Localized
 }
 
@@ -158,28 +155,34 @@ func (r *RealTelegramBotAdapter) buyPrefixCBRoute(ctx context.Context, id int64,
 		ChatID: id,
 		Text:   r.translator.T("callback_processing"),
 	}) // Localized
-
-	text, err := r.facade.HandleSubscribe(ctx, id, planID)
+	var rows *[][]adapter.Button
+	text, url, err := r.facade.HandleSubscribe(ctx, id, planID)
 	if err != nil {
-		text = r.translator.T("error_payment_init") // Localized
-	}
-	if url := extractFirstURL(text); url != "" {
-		rows := [][]adapter.Button{
+		switch err {
+		case domain.ErrInvalidArgument, domain.ErrPlanNotFound:
+			text = r.translator.T("error_payment_no_plan")
+		case domain.ErrUserNotFound:
+			text = r.translator.T("error_user_not_found")
+		case domain.ErrAlreadyHasReserved:
+			text = r.translator.T("error_already_has_reserved")
+		default:
+			text = r.translator.T("error_payment_init")
+		}
+
+		rows = &[][]adapter.Button{
+			{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}, // Localized
+		}
+	} else {
+		rows = &[][]adapter.Button{
 			{{Text: r.translator.T("button_pay_now"), URL: url}},       // Localized
 			{{Text: r.translator.T("back_to_menu"), Data: "cmd:menu"}}, // Localized
 		}
-		markup := adapter.ReplyMarkup{Buttons: rows, IsInline: true}
-		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:      id,
-			Text:        text,
-			ParseMode:   tgbotapi.ModeMarkdownV2,
-			ReplyMarkup: &markup,
-		}) // Localized
 	}
+	markup := adapter.ReplyMarkup{Buttons: *rows, IsInline: true}
 	return r.SendMessage(ctx, adapter.SendMessageParams{
-		ChatID:    id,
-		Text:      text,
-		ParseMode: tgbotapi.ModeMarkdownV2,
+		ChatID:      id,
+		Text:        text,
+		ReplyMarkup: &markup,
 	}) // Localized
 }
 
@@ -189,9 +192,8 @@ func (r *RealTelegramBotAdapter) chatPrefixCBRoute(ctx context.Context, id int64
 	if err != nil {
 		if errors.Is(err, domain.ErrModelNotAvailable) {
 			_ = r.SendMessage(ctx, adapter.SendMessageParams{
-				ChatID:    id,
-				Text:      r.translator.T("error_model_unavailable"),
-				ParseMode: tgbotapi.ModeMarkdownV2,
+				ChatID: id,
+				Text:   r.translator.T("error_model_unavailable"),
 			}) // Localized
 			// Re-display the menu so they can choose another model
 			return r.sendModelMenu(ctx, id)
@@ -216,16 +218,14 @@ func (r *RealTelegramBotAdapter) continueChatPrefixCBRoute(ctx context.Context, 
 	user, err := r.facade.UserUC.GetByTelegramID(ctx, id)
 	if err != nil || user == nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_user_not_found"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_user_not_found"),
 		}) // Localized
 	}
 	if err := r.facade.ChatUC.SwitchActiveSession(ctx, user.ID, sessionID); err != nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_chat_continue"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_chat_continue"),
 		}) // Localized
 	}
 	return r.sendEndChatButton(ctx, id)
@@ -235,9 +235,8 @@ func (r *RealTelegramBotAdapter) deleteChatPrefixCBRoute(ctx context.Context, id
 	sessionID := strings.TrimPrefix(data, "hist:del:")
 	if err := r.facade.ChatUC.DeleteSession(ctx, sessionID); err != nil {
 		return r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_chat_delete"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_chat_delete"),
 		}) // Localized
 	}
 	return r.sendHistoryMenu(ctx, id)
@@ -248,9 +247,8 @@ func (r *RealTelegramBotAdapter) privacyToggleCBRoute(ctx context.Context, id in
 	if err != nil {
 		r.log.Error().Err(err).Int64("tg_id", id).Msg("failed to toggle message storage")
 		_ = r.SendMessage(ctx, adapter.SendMessageParams{
-			ChatID:    id,
-			Text:      r.translator.T("error_toggle_privacy"),
-			ParseMode: tgbotapi.ModeMarkdownV2,
+			ChatID: id,
+			Text:   r.translator.T("error_toggle_privacy"),
 		}) // Localized
 	}
 
@@ -330,7 +328,7 @@ func (r *RealTelegramBotAdapter) viewPlanCBRoute(ctx context.Context, chatID int
 		modelsStr,
 	)
 
-	fullMessage := fmt.Sprintf("%s\n\n%s", header, body)
+	fullMessage := r.EscapeMarkdownV2(fmt.Sprintf("%s\n\n%s", header, body))
 
 	// Build the new purchase option buttons
 	markup := adapter.ReplyMarkup{

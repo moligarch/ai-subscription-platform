@@ -97,3 +97,15 @@ func (d *userRepoCacheDecorator) CountUsers(ctx context.Context, tx repository.T
 func (d *userRepoCacheDecorator) CountInactiveUsers(ctx context.Context, tx repository.Tx, since time.Time) (int, error) {
 	return d.inner.CountInactiveUsers(ctx, tx, since)
 }
+
+func (d *userRepoCacheDecorator) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	// Bypass the cache if we are fetching all users.
+	if limit == 0 {
+		metrics.IncCacheRequest("user_list", "bypass")
+		return d.inner.List(ctx, tx, offset, limit)
+	}
+
+	// Caching for paginated lists can be complex; for now, I'll keep it as a simple pass-through.
+	// This logic can be expanded later if list caching is needed.
+	return d.inner.List(ctx, tx, offset, limit)
+}

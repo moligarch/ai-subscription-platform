@@ -16,4 +16,5 @@ type UserRepository interface {
 	FindByID(ctx context.Context, tx Tx, id string) (*model.User, error)
 	CountUsers(ctx context.Context, tx Tx) (int, error)
 	CountInactiveUsers(ctx context.Context, tx Tx, since time.Time) (int, error)
+	List(ctx context.Context, tx Tx, offset, limit int) ([]*model.User, error)
 }

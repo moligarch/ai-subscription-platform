@@ -36,7 +36,8 @@ INSERT INTO users (
   phone_number = EXCLUDED.phone_number,
   registration_status = EXCLUDED.registration_status,
   last_active_at = EXCLUDED.last_active_at,
-  allow_message_storage = EXCLUDED.allow_message_storage;
+  allow_message_storage = EXCLUDED.allow_message_storage,
+  is_admin = EXCLUDED.is_admin;
 `
 	_, err := execSQL(ctx, r.pool, tx, q, u.ID, u.TelegramID, u.Username, u.FullName, u.PhoneNumber, u.RegistrationStatus, u.RegisteredAt, u.LastActiveAt, u.Privacy.AllowMessageStorage, u.Privacy.AutoDeleteMessages, u.Privacy.MessageRetentionDays, u.Privacy.DataEncrypted, u.IsAdmin)
 	if err != nil {
@@ -62,7 +63,7 @@ SELECT id, telegram_id, username, full_name, phone_number, registration_status, 
 	var u model.User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrNotFound
+			return nil, domain.ErrUserNotFound
 		}
 		return nil, domain.ErrReadDatabaseRow
 	}
@@ -83,7 +84,7 @@ SELECT id, telegram_id, username, full_name, phone_number, registration_status, 
 	var u model.User
 	if err := row.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, domain.ErrNotFound
+			return nil, domain.ErrUserNotFound
 		}
 		return nil, domain.ErrReadDatabaseRow
 	}
@@ -120,4 +121,47 @@ func (r *userRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, sin
 		return 0, domain.ErrReadDatabaseRow
 	}
 	return n, nil
+}
+
+func (r *userRepo) List(ctx context.Context, tx repository.Tx, offset, limit int) ([]*model.User, error) {
+	q := `
+SELECT id, telegram_id, username, full_name, phone_number, registration_status, registered_at, last_active_at,
+       allow_message_storage, auto_delete_messages, message_retention_days, data_encrypted, is_admin
+  FROM users ORDER BY registered_at DESC`
+
+	var args []interface{}
+
+	if limit == 0 {
+		// Case 1: limit is exactly 0. Fetch all users, no LIMIT or OFFSET.
+	} else {
+		// Case 2: limit is not 0. This is a paginated query.
+		if limit < 0 {
+			// Sub-case: limit is negative. Use the default page size.
+			limit = 50
+		}
+		q += " OFFSET $1 LIMIT $2"
+		args = append(args, offset, limit)
+	}
+
+	rows, err := queryRows(ctx, r.pool, tx, q, args...)
+	if err != nil {
+		return nil, domain.ErrOperationFailed
+	}
+	defer rows.Close()
+
+	var users []*model.User
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.TelegramID, &u.Username, &u.FullName, &u.PhoneNumber, &u.RegistrationStatus, &u.RegisteredAt, &u.LastActiveAt, &u.Privacy.AllowMessageStorage, &u.Privacy.AutoDeleteMessages, &u.Privacy.MessageRetentionDays, &u.Privacy.DataEncrypted, &u.IsAdmin); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
+			return nil, domain.ErrReadDatabaseRow
+		}
+		users = append(users, &u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, domain.ErrReadDatabaseRow
+	}
+	return users, nil
 }

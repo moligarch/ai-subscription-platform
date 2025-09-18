@@ -27,6 +27,7 @@ type SubscriptionUseCase interface {
 	Subscribe(ctx context.Context, userID, planID string) (*model.UserSubscription, error)
 	GetActive(ctx context.Context, userID string) (*model.UserSubscription, error)
 	GetReserved(ctx context.Context, userID string) ([]*model.UserSubscription, error)
+	ListByUserID(ctx context.Context, userID string) ([]*model.UserSubscription, error)
 	DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error)
 	FinishExpired(ctx context.Context) (int, error)
 	RedeemActivationCode(ctx context.Context, userID, code string) (*model.UserSubscription, error)
@@ -113,6 +114,11 @@ func (u *subscriptionUC) GetActive(ctx context.Context, userID string) (*model.U
 func (u *subscriptionUC) GetReserved(ctx context.Context, userID string) ([]*model.UserSubscription, error) {
 	defer logging.TraceDuration(u.log, "SubscriptionUC.GetReserved")()
 	return u.subs.FindReservedByUser(ctx, repository.NoTX, userID)
+}
+
+func (u *subscriptionUC) ListByUserID(ctx context.Context, userID string) ([]*model.UserSubscription, error) {
+	defer logging.TraceDuration(u.log, "SubscriptionUC.ListByUserID")()
+	return u.subs.ListByUserID(ctx, repository.NoTX, userID)
 }
 
 func (u *subscriptionUC) DeductCredits(ctx context.Context, userID string, amount int64) (*model.UserSubscription, error) {

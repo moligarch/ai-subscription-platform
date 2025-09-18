@@ -27,7 +27,7 @@ func findProjectRoot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for i := 0; i < 10; i++ { // Limit to 10 levels up
+	for i := 0; i < 6; i++ { // Limit to 6 levels up
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
 			return dir, nil
 		}
@@ -53,14 +53,14 @@ func TestMain(m *testing.M) {
 		"-e", fmt.Sprintf("POSTGRES_DB=%s", dbName),
 		"-e", fmt.Sprintf("POSTGRES_USER=%s", dbUser),
 		"-e", fmt.Sprintf("POSTGRES_PASSWORD=%s", dbPassword),
-		"postgres:14-alpine",
+		"postgres:14",
 	)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {
 		log.Fatalf("could not start postgres container: %v. Is Docker running?", err)
 	}
-	containerID := strings.TrimSpace(out.String())
+	containerID := strings.TrimSpace(out.String())[:12]
 
 	// 2. Readiness Probe and Connection
 	connStr := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s?sslmode=disable", dbUser, dbPassword, dbPort, dbName)

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -90,6 +91,9 @@ SELECT id, model_name, input_token_price_micros, output_token_price_micros, acti
 	for rows.Next() {
 		var p model.ModelPricing
 		if err := rows.Scan(&p.ID, &p.ModelName, &p.InputTokenPriceMicros, &p.OutputTokenPriceMicros, &p.Active, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, domain.ErrNotFound
+			}
 			return nil, domain.ErrReadDatabaseRow
 		}
 		out = append(out, &p)

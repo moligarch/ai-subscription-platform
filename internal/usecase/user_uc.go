@@ -33,6 +33,7 @@ var _ UserUseCase = (*userUC)(nil)
 type UserUseCase interface {
 	RegisterOrFetch(ctx context.Context, tgID int64, username string) (*model.User, error)
 	GetByTelegramID(ctx context.Context, tgID int64) (*model.User, error)
+	FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error)
 	Count(ctx context.Context) (int, error)
 	CountInactiveSince(ctx context.Context, since time.Time) (int, error)
 	ToggleMessageStorage(ctx context.Context, tgID int64) error
@@ -43,6 +44,7 @@ type UserUseCase interface {
 	SetConversationState(ctx context.Context, tgID int64, state *repository.ConversationState) error
 	GetConversationState(ctx context.Context, tgID int64) (*repository.ConversationState, error)
 	ClearConversationState(ctx context.Context, tgID int64) error
+	List(ctx context.Context, offset, limit int) ([]*model.User, error)
 }
 
 type userUC struct {
@@ -51,6 +53,7 @@ type userUC struct {
 	stateRepo  repository.StateRepository
 	translator *i18n.Translator
 	tm         repository.TransactionManager
+	adminIDMap map[int64]struct{}
 	log        *zerolog.Logger
 }
 
@@ -60,14 +63,21 @@ func NewUserUseCase(
 	stateRepo repository.StateRepository,
 	translator *i18n.Translator,
 	tm repository.TransactionManager,
+	adminIDs []int64,
 	logger *zerolog.Logger,
 ) *userUC {
+	adminMap := make(map[int64]struct{})
+	for _, id := range adminIDs {
+		adminMap[id] = struct{}{}
+	}
+
 	return &userUC{
 		users:      users,
 		sessions:   sessions,
 		stateRepo:  stateRepo,
 		translator: translator,
 		tm:         tm,
+		adminIDMap: adminMap,
 		log:        logger,
 	}
 }
@@ -82,18 +92,24 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 	err := u.tm.WithTx(ctx, txOpts, func(ctx context.Context, tx repository.Tx) error {
 		usr, err := u.users.FindByTelegramID(ctx, tx, tgID)
 		if err != nil {
-			if err != domain.ErrNotFound {
+			if err != domain.ErrUserNotFound {
 				return err
 			}
 			u.log.Warn().Err(err).Int64("tg_id", tgID).Msg("Failed to find user by Telegram ID")
 		}
 
+		_, isAdmin := u.adminIDMap[tgID]
+
 		if usr != nil {
-			// If the user exists, we must update their state and SAVE the changes.
+			// Logic for EXISTING users
+			usr.Touch()
 			if usr.Username != username && username != "" {
 				usr.Username = username
 			}
-			usr.Touch() // Update the last active time.
+			// Sync admin status for existing users
+			if usr.IsAdmin != isAdmin {
+				usr.IsAdmin = isAdmin
+			}
 
 			// The missing Save call is now restored.
 			if err = u.users.Save(ctx, tx, usr); err != nil {
@@ -109,6 +125,8 @@ func (u *userUC) RegisterOrFetch(ctx context.Context, tgID int64, username strin
 		if err != nil {
 			return err
 		}
+
+		nu.IsAdmin = isAdmin
 		if err := u.users.Save(ctx, tx, nu); err != nil {
 			return err
 		}
@@ -131,6 +149,11 @@ func (u *userUC) GetByTelegramID(ctx context.Context, tgID int64) (*model.User, 
 	return u.users.FindByTelegramID(ctx, repository.NoTX, tgID)
 }
 
+func (u *userUC) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.User, error) {
+	defer logging.TraceDuration(u.log, "UserUC.FindByID")()
+	return u.users.FindByID(ctx, tx, id)
+}
+
 func (u *userUC) Count(ctx context.Context) (int, error) {
 	defer logging.TraceDuration(u.log, "UserUC.Count")()
 	return u.users.CountUsers(ctx, repository.NoTX)
@@ -148,7 +171,7 @@ func (u *userUC) ToggleMessageStorage(ctx context.Context, tgID int64) error {
 			return err
 		}
 		if user == nil {
-			return domain.ErrNotFound
+			return domain.ErrUserNotFound
 		}
 
 		// Toggle the setting
@@ -183,7 +206,6 @@ func (u *userUC) ProcessRegistrationStep(ctx context.Context, tgID int64, messag
 
 	switch state.Step {
 	case StepAwaitFullName:
-		// --- THE REFINEMENT ---
 		// Validate that the user sent non-empty, plain text.
 		if strings.TrimSpace(messageText) == "" || phoneNumber != "" {
 			return u.translator.T("reg_invalid_fullname"), nil, nil
@@ -292,4 +314,9 @@ func (u *userUC) GetConversationState(ctx context.Context, tgID int64) (*reposit
 
 func (u *userUC) ClearConversationState(ctx context.Context, tgID int64) error {
 	return u.stateRepo.ClearState(ctx, tgID)
+}
+
+func (u *userUC) List(ctx context.Context, offset, limit int) ([]*model.User, error) {
+	defer logging.TraceDuration(u.log, "UserUC.List")()
+	return u.users.List(ctx, repository.NoTX, offset, limit)
 }

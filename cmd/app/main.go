@@ -26,6 +26,7 @@ import (
 	red "telegram-ai-subscription/internal/infra/redis"
 	"telegram-ai-subscription/internal/infra/sched"
 	"telegram-ai-subscription/internal/infra/security"
+	"telegram-ai-subscription/internal/infra/web"
 	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 
@@ -139,7 +140,7 @@ func main() {
 			cfg.AI.OpenAI.APIKey,
 			cfg.AI.OpenAI.BaseURL,
 			cfg.AI.OpenAI.DefaultModel,
-			cfg.AI.MaxOutputTokens, // NEW
+			cfg.AI.MaxOutputTokens,
 		)
 		if err != nil {
 			logger.Warn().Err(err).Msg("[OpenAI Adapter]")
@@ -155,7 +156,7 @@ func main() {
 			cfg.AI.Gemini.APIKey,
 			cfg.AI.Gemini.BaseURL,
 			cfg.AI.Gemini.DefaultModel,
-			cfg.AI.MaxOutputTokens, // NEW
+			cfg.AI.MaxOutputTokens,
 		)
 		if err != nil {
 			logger.Warn().Err(err).Msg("[Gemini Adapter]")
@@ -169,7 +170,7 @@ func main() {
 	aiRouter := ai.NewMultiAIAdapter("openai", providers, cfg.AI.ModelProviderMap)
 
 	// ---- Use Cases ----
-	userUC := usecase.NewUserUseCase(userRepo, chatRepo, stateRepo, translator, txManager, logger)
+	userUC := usecase.NewUserUseCase(userRepo, chatRepo, stateRepo, translator, txManager, cfg.Bot.AdminIDs, logger)
 	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, activationCodeRepo, logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, activationCodeRepo, txManager, logger)
 	chatUC := usecase.NewChatUseCase(chatRepo, userRepo, planRepo, priceRepo, aiJobRepo, aiRouter, subUC, locker, txManager, logger, cfg.Runtime.Dev)
@@ -180,8 +181,7 @@ func main() {
 		logger.Fatal().Err(err).Msg("zarinpal gateway")
 	}
 	paymentUC := usecase.NewPaymentUseCase(payRepo, planRepo, subUC, purchaseRepo, zp, txManager, logger)
-
-	_ = usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
+	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, payRepo, logger)
 
 	// Bot facade (used by telegram adapter)
 	facade := application.NewBotFacade(userUC, planUC, subUC, paymentUC, chatUC, cfg.Payment.ZarinPal.CallbackURL)
@@ -192,6 +192,13 @@ func main() {
 		logger.Fatal().Err(err).Msg("telegram adapter")
 	}
 	defer botAdapter.StopPolling() // ensure we stop cleanly on shutdown
+
+	appWorkerPool := worker.NewPool(cfg.Bot.Workers)
+	appWorkerPool.Start(ctx)
+	defer appWorkerPool.Stop()
+
+	broadcastUC := usecase.NewBroadcastUseCase(userRepo, botAdapter, appWorkerPool, logger)
+	facade.SetBroadcastUseCase(broadcastUC)
 
 	if strings.ToLower(cfg.Bot.Mode) != "polling" {
 		logger.Warn().Str("mode", cfg.Bot.Mode).Msg("bot.mode not implemented; using polling")
@@ -212,10 +219,16 @@ func main() {
 		}
 	}
 
-	// ---- HTTP callback server with guards ----
-	srv := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
+	// ---- HTTP server with guards ----
+	// Payment callback server
+	paymentCallbackServer := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
+	// Admin Panel API server
+	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, logger)
+
 	mux := http.NewServeMux()
-	srv.Register(mux)
+	paymentCallbackServer.Register(mux)
+	adminAPIServer.RegisterRoutes(mux)
+
 	handler := api.Chain(mux,
 		api.TraceID(logger),
 		api.RequestLog(logger),
@@ -243,9 +256,6 @@ func main() {
 
 	// ---- Background workers ----
 	go startMetricsCollector(ctx, pool, subRepo, logger)
-	appWorkerPool := worker.NewPool(cfg.Bot.Workers) // Use the same worker count as the bot
-	appWorkerPool.Start(ctx)
-	defer appWorkerPool.Stop()
 
 	// Notification worker: check for expiring subs every 6 hours
 	notificationWorker := sched.NewNotificationWorker(6*time.Hour, notifUC, logger)

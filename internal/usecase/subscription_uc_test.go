@@ -314,3 +314,43 @@ func TestSubscriptionUseCase_RedeemActivationCode(t *testing.T) {
 		}
 	})
 }
+
+func TestSubscriptionUseCase_ListByUserID(t *testing.T) {
+	ctx := context.Background()
+	testLogger := newTestLogger()
+	mockTxManager := NewMockTxManager()
+
+	t.Run("should call repository and return a list of subscriptions", func(t *testing.T) {
+		// --- Arrange ---
+		mockSubRepo := NewMockSubscriptionRepo()
+		mockCodeRepo := NewMockActivationCodeRepo()
+		uc := usecase.NewSubscriptionUseCase(mockSubRepo, nil, mockCodeRepo, mockTxManager, testLogger)
+
+		expectedSubs := []*model.UserSubscription{
+			{ID: "sub-1", UserID: "user-123"},
+			{ID: "sub-2", UserID: "user-123"},
+		}
+
+		// Configure the mock to return our expected subscriptions
+		mockSubRepo.ListByUserIDFunc = func(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
+			if userID != "user-123" {
+				t.Errorf("expected to be called with userID 'user-123', but got '%s'", userID)
+			}
+			return expectedSubs, nil
+		}
+
+		// --- Act ---
+		resultSubs, err := uc.ListByUserID(ctx, "user-123")
+
+		// --- Assert ---
+		if err != nil {
+			t.Fatalf("expected no error, but got: %v", err)
+		}
+		if len(resultSubs) != 2 {
+			t.Errorf("expected to get 2 subscriptions, but got %d", len(resultSubs))
+		}
+		if resultSubs[0].ID != "sub-1" {
+			t.Error("mismatch in returned subscription data")
+		}
+	})
+}

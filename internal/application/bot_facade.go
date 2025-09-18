@@ -20,8 +20,8 @@ type BotFacade struct {
 	SubscriptionUC usecase.SubscriptionUseCase
 	PaymentUC      usecase.PaymentUseCase
 	ChatUC         usecase.ChatUseCase
-
-	callbackURL string
+	BroadcastUC    usecase.BroadcastUseCase
+	callbackURL    string
 }
 
 func NewBotFacade(
@@ -40,6 +40,10 @@ func NewBotFacade(
 		ChatUC:         chatUC,
 		callbackURL:    callbackURL,
 	}
+}
+
+func (b *BotFacade) SetBroadcastUseCase(uc usecase.BroadcastUseCase) {
+	b.BroadcastUC = uc
 }
 
 // HandleStart ensures user exists and returns quick help text.
@@ -119,13 +123,17 @@ func (b *BotFacade) HandleDeletePlan(ctx context.Context, id string) (string, er
 
 // HandleSubscribe starts payment flow for a plan.
 // PaymentUC.Initiate signature in your code expects amount as STRING.
-func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planID string) (string, error) {
+func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planID string) (msg, url string, err error) {
 	if strings.TrimSpace(planID) == "" {
-		return "Usage: /buy <plan_id>", nil
+		msg, url = "", ""
+		err = domain.ErrInvalidArgument
+		return
 	}
 	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil {
-		return "No user found. Try /start first.", nil
+		msg, url = "", ""
+		err = domain.ErrUserNotFound
+		return
 	}
 
 	// Build payment description (optional)
@@ -139,22 +147,29 @@ func (f *BotFacade) HandleSubscribe(ctx context.Context, telegramID int64, planI
 	meta := map[string]interface{}{
 		"user_tg": telegramID,
 	}
-	_, payURL, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
+	_, payUrl, err := f.PaymentUC.Initiate(ctx, user.ID, planID, f.callbackURL, desc, meta)
 	if err != nil {
 		// Handle all known business errors with specific user-facing messages.
 		if errors.Is(err, domain.ErrAlreadyHasReserved) {
-			return "You already have a reserved subscription. You can purchase a new plan after it activates.", nil
+			msg, url = "", ""
+			err = domain.ErrAlreadyHasReserved
+			return
 		}
 		if errors.Is(err, domain.ErrPlanNotFound) {
-			return "The plan ID you provided is invalid. Please use /plans to see available plans.", nil
+			msg, url = "", ""
+			err = domain.ErrPlanNotFound
+			return
 		}
 		// For unexpected errors, return a generic message and log the details.
-		return "Failed to initiate payment. Please try again later.", nil
+		msg, url = "", ""
+		err = domain.ErrOperationFailed
+		return
 	}
 
-	msg := "Please complete your payment at: " + payURL + "\n" +
-		"After success you'll be redirected and your plan will activate."
-	return msg, nil
+	msg = "لطفا خرید خود را با کلیک بر روی لینک زیر تکمیل کنید. پس از تکمیل فرآیند، با /status می‌توانید اشتراک های فعال خود را مشاهده کنید."
+	url = payUrl
+	err = nil
+	return
 }
 
 // ReservedPlanInfo holds details for a single reserved plan.
@@ -177,7 +192,7 @@ type StatusInfo struct {
 func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (*StatusInfo, error) {
 	user, err := f.UserUC.GetByTelegramID(ctx, telegramID)
 	if err != nil || user == nil {
-		return nil, errors.New("user not found")
+		return nil, domain.ErrUserNotFound
 	}
 
 	info := &StatusInfo{}
@@ -218,7 +233,7 @@ func (f *BotFacade) HandleStatus(ctx context.Context, telegramID int64) (*Status
 func (b *BotFacade) HandleBalance(ctx context.Context, tgID int64) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 	sub, err := b.SubscriptionUC.GetActive(ctx, user.ID)
 	if err != nil || sub == nil {
@@ -232,7 +247,7 @@ func (b *BotFacade) HandleBalance(ctx context.Context, tgID int64) (string, erro
 func (b *BotFacade) HandleStartChat(ctx context.Context, tgID int64, modelName string) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 
 	models, err := b.ChatUC.ListModels(ctx, user.ID)
@@ -274,7 +289,7 @@ func (b *BotFacade) HandleEndChat(ctx context.Context, tgID int64, sessionID str
 func (b *BotFacade) HandleChatMessage(ctx context.Context, tgID int64, text string) (string, error) {
 	user, err := b.UserUC.GetByTelegramID(ctx, tgID)
 	if err != nil || user == nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", domain.ErrUserNotFound
 	}
 
 	sess, err := b.ChatUC.FindActiveSession(ctx, user.ID)
@@ -306,4 +321,17 @@ func (b *BotFacade) HandleGenerateCodes(ctx context.Context, planID string, coun
 		return nil, domain.ErrOperationFailed
 	}
 	return codes, nil
+}
+
+func (b *BotFacade) HandleCast(ctx context.Context, message string) (string, error) {
+	if strings.TrimSpace(message) == "" {
+		return "Usage: /cast <message>", nil
+	}
+
+	count, err := b.BroadcastUC.BroadcastMessage(ctx, message)
+	if err != nil {
+		return "Error starting broadcast.", err
+	}
+
+	return fmt.Sprintf("✅ Broadcast queued. The message will be sent to approximately %d users in the background.", count), nil
 }
