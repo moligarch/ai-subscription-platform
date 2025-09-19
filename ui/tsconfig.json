@@ -1,0 +1,14 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "vitest/globals"],
+    "allowJs": true,
+    "checkJs": false,
+    "strict": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "esModuleInterop": true
+  },
+  "include": ["src/**/*", "test/**/*", "vite.config.mts"],
+  "exclude": ["node_modules"]
+}
