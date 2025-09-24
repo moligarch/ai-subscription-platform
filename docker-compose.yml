@@ -6,15 +6,19 @@ services:
   caddy:
     image: caddy:2
     container_name: caddy
-    restart: unless-stopped
+    restart: always
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./deploy/admin-ui:/srv/admin-ui
       - caddy_data:/data
     networks:
       - app_net
+    depends_on:
+      - app
+      - grafana
 
   postgres:
     image: postgres:14
@@ -72,6 +76,8 @@ services:
       dockerfile: Dockerfile
     image: telegram-ai:latest
     container_name: telegram-ai
+    volumes:
+      - ./config.yaml:/etc/app/config.yaml
     env_file:
       - .env
     depends_on:

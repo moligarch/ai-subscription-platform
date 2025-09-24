@@ -8,4 +8,12 @@ export default defineConfig({
       preprocess: sveltePreprocess(),
     }),
   ],
+  server: {
+    proxy: {
+      '/api': {
+        target: 'http://admin.localdev', // Use the new hostname
+        changeOrigin: true,
+      },
+    },
+  },
 });

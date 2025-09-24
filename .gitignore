@@ -4,3 +4,7 @@ changelog.md
 **/_bak/
 bin/
 .vscode/settings.json
+
+ui/node_modules/
+ui/dist/
+deploy/admin-ui/

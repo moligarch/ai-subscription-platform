@@ -66,6 +66,15 @@ integration-test:
 e2e-setup:
 	@echo "Setting up database for manual end-to-end testing..."
 	@go run ./cmd/e2e-setup/main.go --config ./config.yaml
+
+
+build-ui:
+	cd ui && npm ci && npm run build
+	rm -rf deploy/admin-ui || true
+	mkdir -p deploy/admin-ui
+	cp -r ui/dist/* deploy/admin-ui/
+
+
 ## --------------------------------------
 ## Docker Compose Commands
 ## --------------------------------------
@@ -105,6 +114,7 @@ help:
 	@echo "  test             - Run all unit tests."
 	@echo "  integration-test - Run integration tests. Use 'package=postgres' or 'package=web' to focus."
 	@echo "  e2e-setup        - Run the end-to-end database setup script."
+	@echo "  build-ui         - Build admin panel ui"
 	@echo "  docker-up        - Start all services with Docker Compose."
 	@echo "  docker-down      - Stop and remove all services and volumes."
 	@echo "  docker-run       - Start a specific service (e.g., 'make docker-run service=redis')."

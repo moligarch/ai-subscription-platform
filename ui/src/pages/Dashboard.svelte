@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from '../lib/api'; // Import the API helper
 
   let stats: any = null;
   let error = '';
@@ -7,27 +8,8 @@
 
   onMount(async () => {
     try {
-      // --- MOCK API CALL ---
-      // In a real application, this would be: stats = await get('/api/v1/stats');
-      // Here, we simulate the network request with a 1-second delay.
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      // This is our static, mock data that matches the API specification.
-      stats = {
-        total_users: 152,
-        active_subs_by_plan: {
-          "plan_id_1": 25,
-          "plan_id_2": 51
-        },
-        total_remaining_credits: 1234567,
-        revenue_irr: {
-          week: 1500000,
-          month: 7850000,
-          year: 92400000
-        }
-      };
-      // To test the error state, you could uncomment the line below:
-      // throw new Error("Failed to connect to the server.");
+      // --- LIVE API CALL ---
+      stats = await get('/api/v1/stats');
 
     } catch (e: any) {
       console.error(e);
@@ -58,7 +40,7 @@
     
     <div class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
       <div class="text-sm font-medium text-gray-500">Active Subscriptions</div>
-      <div class="text-3xl font-bold text-gray-800 mt-2">{Object.values(stats.active_subs_by_plan).reduce((a, b) => a + b, 0)}</div>
+      <div class="text-3xl font-bold text-gray-800 mt-2">{Object.values(stats.active_subs_by_plan || {}).reduce((a, b) => a + b, 0)}</div>
     </div>
 
     <div class="bg-white p-6 rounded-lg shadow hover:shadow-lg transition-shadow">
