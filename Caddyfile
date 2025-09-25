@@ -1,9 +1,9 @@
-{
-  auto_https off
-}
+# {
+#   auto_https off
+# }
 
 # Admin site (static files) + API proxy
-http://admin.localdev {
+https://admin.sibgpt.app {
   root * /srv/admin-ui
   encode gzip zstd
 
@@ -20,6 +20,6 @@ http://admin.localdev {
 }
 
 # Grafana
-http://grafana.localdev {
+https://grafana.sibgpt.app {
   reverse_proxy grafana:3000
 }

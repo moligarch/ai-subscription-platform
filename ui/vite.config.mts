@@ -11,7 +11,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-        target: 'http://admin.localdev', // Use the new hostname
+        target: 'http://admin.sibgpt.app', // Use the new hostname
         changeOrigin: true,
       },
     },
