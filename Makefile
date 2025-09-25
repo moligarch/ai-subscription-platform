@@ -9,6 +9,9 @@ UI_DIR := ui
 DEPLOY_UI_DIR := deploy/admin-ui
 MAIN_PKG ?= ./cmd/app
 
+PROJECT := $(notdir $(CURDIR))
+COMPOSE_NETWORK := $(PROJECT)_app_net
+
 # choose docker-compose service names used in repo
 APP_SERVICE := app
 CADDY_SERVICE := caddy
@@ -58,7 +61,7 @@ restart-caddy: ## Recreate caddy to pick up Caddyfile changes
 build-ui: ## Build Svelte UI locally (npm/yarn must be installed on host)
 	cd $(UI_DIR) && npm ci && npm run build
 
-deploy-ui: build-ui ## Copy built UI into deploy/admin-ui for Caddy to serve
+deploy-ui: build-ui restart-caddy ## Copy built UI into deploy/admin-ui for Caddy to serve
 	@mkdir -p $(DEPLOY_UI_DIR)
 	@rm -rf $(DEPLOY_UI_DIR)/*
 	@cp -r $(UI_DIR)/dist/* $(DEPLOY_UI_DIR)/
@@ -80,13 +83,22 @@ psd: ## show docker compose status when running in debug mode
 	$(DC) $(DC_DEBUG_FILES) ps
 
 # --- Utilities for running helper commands inside container or using golang image ---
+db: ## Run the db Command to aceess to database directly
+	docker compose exec postgres psql -U app -d appdb
+
 seed: ## Run the seed command using a ephemeral golang container (mounts config.yaml)
 	docker run --rm -it -v "$(PWD)":/src -w /src -v "./config.yaml":/etc/app/config.yaml:ro -e CONFIG_PATH=/etc/app/config.yaml golang:1.24-alpine \
 		sh -c 'go mod download && go run ./cmd/seed --config /etc/app/config.yaml'
 
-e2e: ## Run e2e-setup tool similarly to seed (useful for test setup)
-	docker run --rm -it -v "$(PWD)":/src -w /src -v "./config.yaml":/etc/app/config.yaml:ro -e CONFIG_PATH=/etc/app/config.yaml golang:1.24-alpine \
-		sh -c 'go mod download && go run ./cmd/e2e-setup --config /etc/app/config.yaml'
+e2e: ## Run e2e-setup tool on compose network so it can reach postgres
+	@echo "Using compose network: $(COMPOSE_NETWORK)"
+	docker run --rm -it \
+	  --network $(COMPOSE_NETWORK) \
+	  -v "$(PWD)":/src -w /src \
+	  -v "$(PWD)/config.yaml":/etc/app/config.yaml:ro \
+	  -e CONFIG_PATH=/etc/app/config.yaml \
+	  golang:1.24-alpine \
+	  sh -c 'go mod download && go run ./cmd/e2e-setup --config /etc/app/config.yaml'
 
 test: ## Run unit tests in a temporary golang container
 	docker run --rm -it -v "$(PWD)":/src -w /src golang:1.24-alpine sh -c 'go test ./...'

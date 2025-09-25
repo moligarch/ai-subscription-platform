@@ -22,7 +22,7 @@ RUN go install github.com/go-delve/delve/cmd/dlv@latest
 WORKDIR /app
 COPY --from=builder /out/app /app/app
 # mount full source if needed for debugging
-COPY . /src          
+# COPY . /src          
 
 # Expose app and Delve port
 EXPOSE 8080/tcp
