@@ -19,17 +19,17 @@ const (
 // User is a domain entity representing a Telegram user in our system.
 // Privacy settings are embedded to ensure a single source of truth in-memory.
 type User struct {
-	ID                 string
-	TelegramID         int64
-	Username           string
-	FullName           string
-	PhoneNumber        string
-	RegistrationStatus RegistrationStatus
-	RegisteredAt       time.Time
-	LastActiveAt       time.Time
-	IsAdmin            bool
-	LanguageCode       string
-	Privacy            PrivacySettings
+	ID                 string             `json:"id"`
+	TelegramID         int64              `json:"telegram_id"`
+	Username           string             `json:"username"`
+	FullName           string             `json:"full_name"`
+	PhoneNumber        string             `json:"phone_number"`
+	RegistrationStatus RegistrationStatus `json:"registration_status"`
+	RegisteredAt       time.Time          `json:"registered_at"`
+	LastActiveAt       time.Time          `json:"last_active_at"`
+	IsAdmin            bool               `json:"is_admin"`
+	LanguageCode       string             `json:"language_code"`
+	Privacy            PrivacySettings    `json:"privacy"`
 }
 
 func NewUser(id string, tgID int64, username string) (*User, error) {

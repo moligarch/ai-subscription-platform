@@ -1,47 +1,31 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { get } from '../lib/api'; // Use the same API helper
 
   // --- State Management ---
   let users: any[] = [];
   let total = 0;
-  let limit = 10; // Let's use a smaller page size for easier testing
+  let limit = 10; // Page size
   let offset = 0;
   let loading = true;
   let error = '';
 
-  // --- Mock Data Generation ---
-  // A helper function to create a consistent set of mock users for pagination.
-  function generateMockUsers(totalUsers: number, pageLimit: number, pageOffset: number) {
-    const allUsers = Array.from({ length: totalUsers }, (_, i) => {
-      const id = 1000 + i;
-      return {
-        id: `a1b2c3d4-e5f6-7890-1234-567890abcdef${id}`,
-        telegram_id: 987654321 + i,
-        username: `user_${id}`,
-        full_name: `User Fullname ${id}`,
-        phone_number: `+989123456${id.toString().slice(-3)}`,
-      };
-    });
-
-    return {
-      data: allUsers.slice(pageOffset, pageOffset + pageLimit),
-      total: totalUsers,
-      limit: pageLimit,
-      offset: pageOffset,
-    };
-  }
-  
   // --- Data Fetching ---
   async function load() {
     loading = true;
     error = '';
     try {
-      // --- MOCK API CALL ---
-      // Simulates fetching `/api/v1/users?limit=...&offset=...`
-      await new Promise(resolve => setTimeout(resolve, 800)); // Simulate network delay
+      // --- REAL API CALL ---
+      const res = await get<{ data: any[]; total: number; limit: number; offset: number }>(
+        `/api/v1/users?limit=${limit}&offset=${offset}`
+      );
 
-      const res = generateMockUsers(127, limit, offset); // We have 127 total mock users
-      
+      if (!res || !res.data) {
+        users = [];
+        total = 0;
+        return;
+      }
+
       users = res.data;
       total = res.total;
       limit = res.limit;
@@ -88,6 +72,10 @@
   <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow" role="alert">
     <p class="font-bold">Error</p>
     <p>{error}</p>
+  </div>
+{:else if users.length == 0}
+  <div class="p-6 bg-white rounded-lg shadow text-gray-600 text-center">
+    No users found.
   </div>
 {:else}
   <div class="bg-white rounded-lg shadow overflow-x-auto">

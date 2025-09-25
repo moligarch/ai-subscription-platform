@@ -109,7 +109,8 @@ func (r *userRepo) CountUsers(ctx context.Context, tx repository.Tx) (int, error
 }
 
 func (r *userRepo) CountInactiveUsers(ctx context.Context, tx repository.Tx, since time.Time) (int, error) {
-	row, err := pickRow(ctx, r.pool, tx, `SELECT COUNT(*) FROM users WHERE last_active_at IS NULL OR last_active_at < $1;`, since)
+	const q = `SELECT COUNT(*) FROM users WHERE last_active_at IS NULL OR last_active_at < $1;`
+	row, err := pickRow(ctx, r.pool, tx, q, since)
 	if err != nil {
 		return 0, err
 	}
@@ -133,13 +134,14 @@ SELECT id, telegram_id, username, full_name, phone_number, registration_status, 
 
 	if limit == 0 {
 		// Case 1: limit is exactly 0. Fetch all users, no LIMIT or OFFSET.
+		q += ";"
 	} else {
 		// Case 2: limit is not 0. This is a paginated query.
 		if limit < 0 {
 			// Sub-case: limit is negative. Use the default page size.
 			limit = 50
 		}
-		q += " OFFSET $1 LIMIT $2"
+		q += " OFFSET $1 LIMIT $2;"
 		args = append(args, offset, limit)
 	}
 

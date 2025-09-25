@@ -1,5 +1,20 @@
 import { getApiKey } from './session';
 
+
+async function fetchWithTimeout(url: string, options: any, timeout = 100000): Promise<Response> {
+  const response = await Promise.race([
+    fetch(url, options),
+    new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('Request timed out')), timeout))
+  ]);
+
+  if (!(response instanceof Response)) {
+    throw response; // Ensure only Response is returned
+  }
+
+  return response;
+}
+
+
 export type ApiError = {
   status: number;
   message: string;
@@ -12,9 +27,14 @@ async function req<T>(input: RequestInfo, init: RequestInit = {}): Promise<T> {
   if (token) headers.set('Authorization', `Bearer ${token}`);
   headers.set('Content-Type', 'application/json');
 
-  const res = await fetch(input, { ...init, headers });
+  const url = typeof input === 'string' ? input : input.url;
+  const res = await fetchWithTimeout(url, { ...init, headers }, 100000);
   const text = await res.text();
   let body: any = null;
+  if (res.status === 204) {
+    return null as T; // or return {} as T, depending on the endpoint
+  }
+
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
 
   if (!res.ok) {
