@@ -19,6 +19,13 @@ https://admin.sibgpt.app {
   }
 }
 
+https://payment.sibgpt.app {
+  # Proxy API calls to backend service
+  handle /api/* {
+    reverse_proxy app:8080
+  }
+}
+
 # Grafana
 https://grafana.sibgpt.app {
   reverse_proxy grafana:3000
