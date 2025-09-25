@@ -104,6 +104,7 @@ test: ## Run unit tests in a temporary golang container
 	docker run --rm -it -v "$(PWD)":/src -w /src golang:1.24-alpine sh -c 'go test ./...'
 
 # --- Housekeeping ---
-clean: clean-ui ## Extendable; currently removes deployed UI
+clean: clean-ui ## Remove container and assosiated file + UI deploy directory
+	$(DC) down -v
 
 all: infra-up run-prod ## Convenience: start infra and run production app
