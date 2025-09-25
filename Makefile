@@ -1,122 +1,97 @@
-# Makefile for the Telegram AI Subscription Bot
+# Makefile - dev / infra / debug helpers
+# Put this at the repo root.
 
-# --- Variables ---
-# Get the current git commit hash and version tag for build stamping.
-COMMIT := $(shell git rev-parse --short HEAD)
-VERSION := $(shell git describe --tags --abbrev=0 2>/dev/null || echo "dev")
-# Define the output directory for binaries.
-OUTPUT_DIR := bin
+# --- Configurable variables ---
+DC ?= docker compose
+DC_DEBUG_FILES = -f docker-compose.yml -f docker-compose.debug.yml
 
-# Use .PHONY to declare targets that are not files. This prevents conflicts
-# with files of the same name and improves performance.
-.PHONY: all help build build-linux build-windows test integration-test docker-up docker-down docker-run clean
+UI_DIR := ui
+DEPLOY_UI_DIR := deploy/admin-ui
+MAIN_PKG ?= ./cmd/app
 
-# The default target executed when you run `make`.
-default: help
+# choose docker-compose service names used in repo
+APP_SERVICE := app
+CADDY_SERVICE := caddy
 
-## --------------------------------------
-## Build Commands
-## --------------------------------------
+# default target
+.DEFAULT_GOAL := help
 
-# Build for all target platforms.
-build: build-linux build-windows
-	@echo "✅ All builds completed."
+# --- Phony targets ---
+.PHONY: help infra-up infra-down build-prod run-prod build-debug run-debug stop-debug restart-caddy \
+        build-ui deploy-ui clean-ui logs-app logs-caddy ps seed e2e test clean all
 
-# Build a static binary for Linux.
-build-linux:
-	@echo "Building for Linux..."
-	@mkdir -p $(OUTPUT_DIR)
-	@GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o $(OUTPUT_DIR)/app-linux-amd64 ./cmd/app
+# --- Help ---
+help: ## Show help for Makefile targets
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
-# Build an executable for Windows.
-build-windows:
-	@echo "Building for Windows..."
-	@mkdir -p $(OUTPUT_DIR)
-	@GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)" -o $(OUTPUT_DIR)/app-windows-amd64.exe ./cmd/app
+# --- Infrastructure ---
+infra-up: ## Start only infrastructure containers (postgres, redis, prometheus, grafana, caddy)
+	$(DC) up -d postgres redis prometheus grafana $(CADDY_SERVICE)
 
-## --------------------------------------
-## Test Commands
-## --------------------------------------
+infra-down: ## Stop & Remove infrastructure containers
+	$(DC) down -v postgres redis prometheus grafana $(CADDY_SERVICE)
 
-# Run all fast unit tests (skips integration tests).
-test:
-	@echo "Running unit tests..."
-	@go test -v -race ./...
+infra-stop: ## Stop infrastructure containers (does not remove volumes/images)
+	$(DC) stop postgres redis prometheus grafana $(CADDY_SERVICE)
 
+# --- Production build / run ---
+build-prod: ## Build the production app image (uses Dockerfile in repo)
+	$(DC) build $(APP_SERVICE)
 
-# Default to running all integration tests if 'package' is not specified.
-TEST_PATH := ./...
-ifeq ($(package),postgres)
-	TEST_PATH := ./internal/infra/db/postgres
-endif
-ifeq ($(package),web)
-	TEST_PATH := ./internal/infra/web
-endif
+run-prod: build-prod ## Build and run the app service in production mode
+	$(DC) up -d $(APP_SERVICE)
 
-# Run slower integration tests. Can be focused on a specific package.
-# Usage:
-#   make integration-test              (runs all integration tests)
-#   make integration-test package=postgres (runs only postgres tests)
-#   make integration-test package=web      (runs only web tests)
-integration-test:
-	@echo "Running integration tests for package(s): $(TEST_PATH)..."
-	@go test -v -race -tags=integration $(TEST_PATH)
+# --- Debug build / run (Delve) ---
+build-debug: ## Build the debug app image (uses Dockerfile.debug via override compose)
+	$(DC) $(DC_DEBUG_FILES) build $(APP_SERVICE)
 
-# Run the end-to-end database setup script.
-e2e-setup:
-	@echo "Setting up database for manual end-to-end testing..."
-	@go run ./cmd/e2e-setup/main.go --config ./config.yaml
+run-debug: build-debug ## Run the debug app (Delve/DAP); binds Delve to localhost:40000 per debug compose
+	$(DC) $(DC_DEBUG_FILES) up -d $(APP_SERVICE)
 
+stop-debug: ## Stop the debug app container
+	$(DC) $(DC_DEBUG_FILES) stop $(APP_SERVICE)
 
-build-ui:
-	cd ui && npm ci && npm run build
-	rm -rf deploy/admin-ui || true
-	mkdir -p deploy/admin-ui
-	cp -r ui/dist/* deploy/admin-ui/
+restart-caddy: ## Recreate caddy to pick up Caddyfile changes
+	$(DC) up -d --force-recreate $(CADDY_SERVICE)
 
+# --- UI helpers ---
+build-ui: ## Build Svelte UI locally (npm/yarn must be installed on host)
+	cd $(UI_DIR) && npm ci && npm run build
 
-## --------------------------------------
-## Docker Compose Commands
-## --------------------------------------
+deploy-ui: build-ui ## Copy built UI into deploy/admin-ui for Caddy to serve
+	@mkdir -p $(DEPLOY_UI_DIR)
+	@rm -rf $(DEPLOY_UI_DIR)/*
+	@cp -r $(UI_DIR)/dist/* $(DEPLOY_UI_DIR)/
 
-# Start all services defined in docker-compose.yml in detached mode.
-docker-up:
-	@echo "Starting all Docker services..."
-	@docker-compose up -d
+clean-ui: ## Remove deployed UI files
+	@rm -rf $(DEPLOY_UI_DIR)/*
 
-# Stop and remove all containers, networks, and volumes.
-docker-down:
-	@echo "Stopping and removing all Docker services and volumes..."
-	@docker-compose down -v
+# --- Logs / status ---
+logs-app: ## Tail logs from the app container
+	$(DC) logs -f $(APP_SERVICE)
 
-# Run a specific service from the docker-compose file.
-# Example: make docker-run service=postgres
-docker-run:
-	@if [ -z "$(service)" ]; then echo "Error: 'service' variable not set. Usage: make docker-run service=<service_name>"; exit 1; fi
-	@echo "Starting service: $(service)..."
-	@docker-compose up -d $(service)
+logs-caddy: ## Tail logs from the caddy container
+	$(DC) logs -f $(CADDY_SERVICE)
 
-## --------------------------------------
-## Utility Commands
-## --------------------------------------
+ps: ## Show docker-compose status
+	$(DC) ps
 
-# Clean up build artifacts.
-clean:
-	@echo "Cleaning up build artifacts..."
-	@rm -rf $(OUTPUT_DIR)
+psd: ## show docker compose status when running in debug mode
+	$(DC) $(DC_DEBUG_FILES) ps
 
-# Display this help message.
-help:
-	@echo "Available commands:"
-	@echo "  build            - Build the application for all target platforms (Linux, Windows)."
-	@echo "  build-linux      - Build the application for Linux."
-	@echo "  build-windows    - Build the application for Windows."
-	@echo "  test             - Run all unit tests."
-	@echo "  integration-test - Run integration tests. Use 'package=postgres' or 'package=web' to focus."
-	@echo "  e2e-setup        - Run the end-to-end database setup script."
-	@echo "  build-ui         - Build admin panel ui"
-	@echo "  docker-up        - Start all services with Docker Compose."
-	@echo "  docker-down      - Stop and remove all services and volumes."
-	@echo "  docker-run       - Start a specific service (e.g., 'make docker-run service=redis')."
-	@echo "  clean            - Remove all build artifacts."
-	@echo "  help             - Show this help message."
+# --- Utilities for running helper commands inside container or using golang image ---
+seed: ## Run the seed command using a ephemeral golang container (mounts config.yaml)
+	docker run --rm -it -v "$(PWD)":/src -w /src -v "./config.yaml":/etc/app/config.yaml:ro -e CONFIG_PATH=/etc/app/config.yaml golang:1.24-alpine \
+		sh -c 'go mod download && go run ./cmd/seed --config /etc/app/config.yaml'
+
+e2e: ## Run e2e-setup tool similarly to seed (useful for test setup)
+	docker run --rm -it -v "$(PWD)":/src -w /src -v "./config.yaml":/etc/app/config.yaml:ro -e CONFIG_PATH=/etc/app/config.yaml golang:1.24-alpine \
+		sh -c 'go mod download && go run ./cmd/e2e-setup --config /etc/app/config.yaml'
+
+test: ## Run unit tests in a temporary golang container
+	docker run --rm -it -v "$(PWD)":/src -w /src golang:1.24-alpine sh -c 'go test ./...'
+
+# --- Housekeeping ---
+clean: clean-ui ## Extendable; currently removes deployed UI
+
+all: infra-up run-prod ## Convenience: start infra and run production app

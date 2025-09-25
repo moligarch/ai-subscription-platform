@@ -19,6 +19,21 @@
       "program": "${fileDirname}",
       "buildFlags": "-tags=integration",
       "args": ["-test.run", "${selectedText}","-test.v"]
+    },
+    {
+      "name": "Attach to Go app in Docker",
+      "type": "go",
+      "request": "attach",
+      "mode": "remote",
+      "host": "127.0.0.1",
+      "port": 40000,
+      "substitutePath": [
+          {
+              "from": "${workspaceFolder}",
+              "to": "/src"
+          }
+      ],
+      "showLog": true
     }
   ]
 }

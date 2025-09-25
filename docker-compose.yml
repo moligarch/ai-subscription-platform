@@ -17,7 +17,7 @@ services:
     networks:
       - app_net
     depends_on:
-      - app
+      # - app
       - grafana
 
   postgres:
@@ -27,6 +27,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      TZ: Asia/Tehran
+      PGTZ: Asia/Tehran
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./deploy/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -74,8 +76,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: telegram-ai:latest
+    image: telegram-ai:prod
     container_name: telegram-ai
+    environment:
+      TZ: Asia/Tehran
     volumes:
       - ./config.yaml:/etc/app/config.yaml
     env_file:
