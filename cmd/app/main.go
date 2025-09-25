@@ -212,7 +212,7 @@ func main() {
 	notifUC := usecase.NewNotificationUseCase(subRepo, notifLogRepo, userRepo, botAdapter, logger)
 
 	// Compute callback path from full URL in config (fallback to default)
-	cbPath := "/api/payment/callback"
+	cbPath := "/api/v1/callback"
 	if u := strings.TrimSpace(cfg.Payment.ZarinPal.CallbackURL); u != "" {
 		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
 			cbPath = parsed.Path

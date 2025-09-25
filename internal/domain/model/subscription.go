@@ -19,15 +19,15 @@ const (
 // UserSubscription represents a user’s individual subscription instance.
 
 type UserSubscription struct {
-	ID               string // UUID
-	UserID           string // UUID of user
-	PlanID           string // UUID of plan
-	CreatedAt        time.Time
-	ScheduledStartAt *time.Time // nil if should start immediately
-	StartAt          *time.Time // nil until active
-	ExpiresAt        *time.Time // nil until scheduled/started
-	RemainingCredits int64
-	Status           SubscriptionStatus
+	ID               string             `json:"id"`                // UUID
+	UserID           string             `json:"user_id"`           // UUID of user
+	PlanID           string             `json:"plan_id"`           // UUID of plan
+	CreatedAt        time.Time          `json:"created_at"`
+	ScheduledStartAt *time.Time         `json:"scheduled_start_at"` // nil if should start immediately
+	StartAt          *time.Time         `json:"start_at"`           // nil until active
+	ExpiresAt        *time.Time         `json:"expires_at"`         // nil until scheduled/started
+	RemainingCredits int64              `json:"remaining_credits"`
+	Status           SubscriptionStatus `json:"status"`
 }
 
 // NewUserSubscription creates a new subscription for a user.

@@ -1,50 +1,44 @@
 # ---- Builder Stage ----
-# Use a specific Go version and a minimal OS (alpine) for a smaller builder.
 FROM golang:1.24-alpine AS builder
-
-# Install build dependencies. For Go, only ca-certificates are typically needed.
-# git is only required if you have private modules or non-standard module versions.
 RUN apk add --no-cache ca-certificates
-
 WORKDIR /src
 
-# Copy only the module files first to leverage Docker's layer caching.
-# This layer only gets rebuilt if go.mod or go.sum changes.
 COPY go.mod go.sum ./
 RUN go mod download
 
-# OPTIMIZATION: Copy source code *after* downloading dependencies.
-# This ensures that code changes don't cause a re-download of all modules.
 COPY . .
 
-# Add ARGs for build-time variables, allowing us to pass version info.
-ARG VERSION=dev
+ARG VERSION=1.0.0.0
 ARG COMMIT=none
+ARG MAIN_PKG=./cmd/app
 
-# Build a static, stripped binary with version information baked in.
 ENV CGO_ENABLED=0
-RUN go build -o /out/app -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" ./cmd/app
-
+RUN mkdir -p /out
+# trimpath + ldflags, strip for prod
+RUN go build -trimpath -o /out/app \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+    ${MAIN_PKG}
 
 # ---- Final Stage ----
-# Use a distroless static image for the final stage. It contains only our app,
-# its dependencies, and essential libraries like ca-certificates and tzdata.
-# It has no shell or other programs, drastically reducing the attack surface.
-FROM alpine:latest
+FROM alpine:3.19 AS runtime
+RUN apk add --no-cache ca-certificates tzdata && update-ca-certificates
 
-# Install minimal runtime dependencies: CA certs for TLS and tzdata for correct time.
-RUN apk add --no-cache ca-certificates tzdata
-
-# Non-root user for security. This works the same on Alpine.
+# Create non-root user
 RUN addgroup -S app && adduser -S -G app app
-USER app
-
 WORKDIR /app
-COPY --from=builder /out/app /app/app
 
-# Config path and exposed port remain the same.
+COPY --from=builder /out/app /app/app
+# Keep config path default (mounted by docker-compose)
 ENV CONFIG_PATH=/etc/app/config.yaml
 EXPOSE 8080
+
+# Ensure ownership
+RUN chown -R app:app /app
+USER app
+
+# Minimal HEALTHCHECK (adjust path as necessary)
+# HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
+#   CMD wget -qO- --header="Authorization: Bearer $ADMIN_API_KEY" http://127.0.0.1:8080/metrics >/dev/null || exit 1
 
 ENTRYPOINT ["/app/app"]
 CMD ["--config", "/etc/app/config.yaml"]

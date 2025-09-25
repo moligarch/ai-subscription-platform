@@ -5,6 +5,7 @@ dist/
 deploy/
 .github/
 .vscode/
+ui/
 
 # VCS / IDE
 .git
