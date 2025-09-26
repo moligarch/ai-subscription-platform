@@ -20,9 +20,17 @@ https://admin.sibgpt.app {
 }
 
 https://payment.sibgpt.app {
-  # Proxy API calls to backend service
+  root * /srv/admin-ui
+  encode gzip zstd
+
   handle /api/* {
     reverse_proxy app:8080
+  }
+
+  # Serve SPA and fallback to index.html for client-side routing
+  handle {
+    try_files {path} /index.html
+    file_server
   }
 }
 

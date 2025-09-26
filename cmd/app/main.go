@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -211,22 +210,15 @@ func main() {
 
 	notifUC := usecase.NewNotificationUseCase(subRepo, notifLogRepo, userRepo, botAdapter, logger)
 
-	// Compute callback path from full URL in config (fallback to default)
-	cbPath := "/api/v1/callback"
-	if u := strings.TrimSpace(cfg.Payment.ZarinPal.CallbackURL); u != "" {
-		if parsed, err := url.Parse(u); err == nil && parsed.Path != "" {
-			cbPath = parsed.Path
-		}
-	}
-
 	// ---- HTTP server with guards ----
-	// Payment callback server
-	paymentCallbackServer := api.NewServer(paymentUC, userRepo, botAdapter, cbPath, cfg.Bot.Username)
-	// Admin Panel API server
+	// Payment/API server (now SPA-first: only /api/v1/payment/verify here + metrics)
+	paymentAPIServer := api.NewServer(paymentUC, userRepo, botAdapter, cfg.Bot.Username)
+
+	// Admin Panel API server (your existing JSON admin endpoints)
 	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, logger)
 
 	mux := http.NewServeMux()
-	paymentCallbackServer.Register(mux)
+	paymentAPIServer.Register(mux)
 	adminAPIServer.RegisterRoutes(mux)
 
 	handler := api.Chain(mux,
@@ -248,7 +240,7 @@ func main() {
 	}()
 
 	go func() {
-		logger.Info().Str("addr", server.Addr).Str("path", cbPath).Msg("http listening")
+		logger.Info().Str("addr", server.Addr).Msg("http listening")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error().Err(err).Msg("http server error")
 		}
