@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
@@ -128,7 +129,7 @@ func TestPaymentUseCase_ConfirmAuto(t *testing.T) {
 		}
 
 		// Simulate the payment status update succeeding
-		deps.payments.UpdateStatusIfPendingFunc = func(ctx context.Context, tx repository.Tx, id string, status model.PaymentStatus) (bool, error) {
+		deps.payments.UpdateStatusIfPendingFunc = func(ctx context.Context, tx repository.Tx, id string, newStatus model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error) {
 			// In a real test, this would update the mock's state
 			return true, nil
 		}

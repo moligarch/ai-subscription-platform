@@ -272,7 +272,7 @@ func TestSubscriptionUseCase_RedeemActivationCode(t *testing.T) {
 		mockSubRepo.SaveFunc = func(ctx context.Context, tx repository.Tx, s *model.UserSubscription) error {
 			return nil
 		}
-		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
 			return &model.SubscriptionPlan{ID: id, DurationDays: 30}, nil
 		}
 

@@ -27,7 +27,7 @@ func TestPlanUseCase(t *testing.T) {
 		uc := usecase.NewPlanUseCase(mockPlanRepo, mockPricingRepo, mockCodeRepo, testLogger)
 
 		var savedPlan *model.SubscriptionPlan
-		mockPlanRepo.SaveFunc = func(ctx context.Context, p *model.SubscriptionPlan) error {
+		mockPlanRepo.SaveFunc = func(ctx context.Context, tx repository.Tx, p *model.SubscriptionPlan) error {
 			savedPlan = p // Capture the plan passed to the repository
 			return nil
 		}
@@ -121,7 +121,7 @@ func TestPlanUseCase(t *testing.T) {
 			// --- Arrange ---
 			mockPlanRepo := NewMockPlanRepo()
 			// For this specific case, we override the mock's behavior to simulate the error
-			mockPlanRepo.DeleteFunc = func(ctx context.Context, id string) error {
+			mockPlanRepo.DeleteFunc = func(ctx context.Context, tx repository.Tx, id string) error {
 				return domain.ErrSubsciptionWithActiveUser
 			}
 			// --- Arrange ---
@@ -224,7 +224,7 @@ func TestPlanUseCase_GenerateActivationCodes(t *testing.T) {
 
 		// Simulate finding a valid plan
 		plan := &model.SubscriptionPlan{ID: "plan-123"}
-		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
 			return plan, nil
 		}
 

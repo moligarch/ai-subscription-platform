@@ -74,7 +74,7 @@ func TestStatsAPI_Integration(t *testing.T) {
 
 	// Usecase and Server
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, paymentRepo, &logger)
-	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
+	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
 	server := NewServer(statsUC, userUC, subUC, nil, apiKey, &logger)
 
@@ -157,7 +157,7 @@ func TestUsersListAPI_Integration(t *testing.T) {
 	}
 
 	// Usecase and Server
-	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, &logger)
+	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
 	server := NewServer(nil, userUC, subUC, nil, apiKey, &logger) // statsUC is not needed here
 

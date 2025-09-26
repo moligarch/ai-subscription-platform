@@ -328,10 +328,10 @@ type MockPlanRepo struct {
 	mu   sync.Mutex
 	data map[string]*model.SubscriptionPlan
 
-	SaveFunc     func(ctx context.Context, p *model.SubscriptionPlan) error
-	FindByIDFunc func(ctx context.Context, id string) (*model.SubscriptionPlan, error)
-	ListAllFunc  func(ctx context.Context) ([]*model.SubscriptionPlan, error)
-	DeleteFunc   func(ctx context.Context, id string) error
+	SaveFunc     func(ctx context.Context, tx repository.Tx, p *model.SubscriptionPlan) error
+	FindByIDFunc func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error)
+	ListAllFunc  func(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error)
+	DeleteFunc   func(ctx context.Context, tx repository.Tx, id string) error
 }
 
 var _ repository.SubscriptionPlanRepository = (*MockPlanRepo)(nil)
@@ -342,7 +342,7 @@ func NewMockPlanRepo() *MockPlanRepo {
 
 func (r *MockPlanRepo) Save(ctx context.Context, tx repository.Tx, p *model.SubscriptionPlan) error {
 	if r.SaveFunc != nil {
-		return r.SaveFunc(ctx, p)
+		return r.SaveFunc(ctx, tx, p)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -356,7 +356,7 @@ func (r *MockPlanRepo) Save(ctx context.Context, tx repository.Tx, p *model.Subs
 
 func (r *MockPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
 	if r.FindByIDFunc != nil {
-		return r.FindByIDFunc(ctx, id)
+		return r.FindByIDFunc(ctx, tx, id)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -369,7 +369,7 @@ func (r *MockPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string
 
 func (r *MockPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
 	if r.ListAllFunc != nil {
-		return r.ListAllFunc(ctx)
+		return r.ListAllFunc(ctx, tx)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -384,7 +384,7 @@ func (r *MockPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.
 
 func (r *MockPlanRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
 	if r.DeleteFunc != nil {
-		return r.DeleteFunc(ctx, id)
+		return r.DeleteFunc(ctx, tx, id)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -444,7 +444,7 @@ func (r *MockSubscriptionRepo) FindActiveByUserAndPlan(ctx context.Context, tx r
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockSubscriptionRepo) FindActiveByUser(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
@@ -459,7 +459,7 @@ func (r *MockSubscriptionRepo) FindActiveByUser(ctx context.Context, tx reposito
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockSubscriptionRepo) FindReservedByUser(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
@@ -488,7 +488,7 @@ func (r *MockSubscriptionRepo) FindByID(ctx context.Context, tx repository.Tx, i
 		cp := *s
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockSubscriptionRepo) ListByUserID(ctx context.Context, tx repository.Tx, userID string) ([]*model.UserSubscription, error) {
@@ -567,7 +567,7 @@ func (r *MockSubscriptionRepo) UpdateRemainingCredits(ctx context.Context, tx re
 		}
 		return nil
 	}
-	return errors.New("not found")
+	return domain.ErrNotFound
 }
 
 func (r *MockSubscriptionRepo) UpdateStatus(ctx context.Context, tx repository.Tx, id string, status model.SubscriptionStatus) error {
@@ -580,7 +580,7 @@ func (r *MockSubscriptionRepo) UpdateStatus(ctx context.Context, tx repository.T
 		s.Status = status
 		return nil
 	}
-	return errors.New("not found")
+	return domain.ErrNotFound
 }
 
 func (r *MockSubscriptionRepo) CountByStatus(ctx context.Context, tx repository.Tx) (map[model.SubscriptionStatus]int, error) {
@@ -606,12 +606,12 @@ type MockPaymentRepo struct {
 	SaveFunc                  func(ctx context.Context, tx repository.Tx, p *model.Payment) error
 	FindByIDFunc              func(ctx context.Context, tx repository.Tx, id string) (*model.Payment, error)
 	FindByAuthorityFunc       func(ctx context.Context, tx repository.Tx, authority string) (*model.Payment, error)
-	UpdateStatusIfPendingFunc func(ctx context.Context, tx repository.Tx, id string, newStatus model.PaymentStatus) (bool, error)
-	UpdateStatusFunc          func(ctx context.Context, tx repository.Tx, id string, newStatus model.PaymentStatus) error
+	UpdateStatusIfPendingFunc func(ctx context.Context, tx repository.Tx, id string, newStatus model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error)
+	UpdateStatusFunc          func(ctx context.Context, tx repository.Tx, id string, newStatus model.PaymentStatus, refID *string, paidAt *time.Time) error
 	SumByPeriodFunc           func(ctx context.Context, tx repository.Tx, period string) (int64, error)
-	SetActivationCodeFunc     func(ctx context.Context, tx repository.Tx, id, code string) error
+	SetActivationCodeFunc     func(ctx context.Context, tx repository.Tx, id, code string, expiresAt time.Time) error
 	FindByActivationCodeFunc  func(ctx context.Context, tx repository.Tx, code string) (*model.Payment, error)
-	ListPendingOlderThanFunc  func(ctx context.Context, tx repository.Tx, olderThan time.Time) ([]*model.Payment, error)
+	ListPendingOlderThanFunc  func(ctx context.Context, tx repository.Tx, olderThan time.Time, limit int) ([]*model.Payment, error)
 }
 
 var _ repository.PaymentRepository = (*MockPaymentRepo)(nil)
@@ -647,7 +647,7 @@ func (r *MockPaymentRepo) FindByID(ctx context.Context, tx repository.Tx, id str
 		cp := *p
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockPaymentRepo) FindByAuthority(ctx context.Context, tx repository.Tx, authority string) (*model.Payment, error) {
@@ -660,46 +660,44 @@ func (r *MockPaymentRepo) FindByAuthority(ctx context.Context, tx repository.Tx,
 		cp := *r.data[id]
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockPaymentRepo) UpdateStatus(ctx context.Context, tx repository.Tx, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) error {
 	if r.UpdateStatusFunc != nil {
-		return r.UpdateStatusFunc(ctx, tx, id, status)
+		return r.UpdateStatusFunc(ctx, tx, id, status, refID, paidAt)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.data[id]
 	if !ok {
-		return errors.New("not found")
+		return domain.ErrNotFound
 	}
 	p.Status = status
-	// optional: if your Payment model has RefID/PaidAt fields, set them here when non-nil
 	return nil
 }
 
 func (r *MockPaymentRepo) UpdateStatusIfPending(ctx context.Context, tx repository.Tx, id string, status model.PaymentStatus, refID *string, paidAt *time.Time) (bool, error) {
 	if r.UpdateStatusIfPendingFunc != nil {
-		return r.UpdateStatusIfPendingFunc(ctx, tx, id, status)
+		return r.UpdateStatusIfPendingFunc(ctx, tx, id, status, refID, paidAt)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.data[id]
 	if !ok {
-		return false, errors.New("not found")
+		return false, domain.ErrNotFound
 	}
 	cur := strings.ToLower(string(p.Status))
 	if cur != "pending" && cur != "initiated" {
 		return false, nil
 	}
 	p.Status = status
-	// optional set refID/paidAt if your model has them
 	return true, nil
 }
 
 func (r *MockPaymentRepo) ListPendingOlderThan(ctx context.Context, tx repository.Tx, olderThan time.Time, limit int) ([]*model.Payment, error) {
 	if r.ListPendingOlderThanFunc != nil {
-		return r.ListPendingOlderThanFunc(ctx, tx, olderThan)
+		return r.ListPendingOlderThanFunc(ctx, tx, olderThan, limit)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -718,16 +716,16 @@ func (r *MockPaymentRepo) ListPendingOlderThan(ctx context.Context, tx repositor
 
 func (r *MockPaymentRepo) SetActivationCode(ctx context.Context, tx repository.Tx, id, code string, expiresAt time.Time) error {
 	if r.SetActivationCodeFunc != nil {
-		return r.SetActivationCodeFunc(ctx, tx, id, code)
+		return r.SetActivationCodeFunc(ctx, tx, id, code, expiresAt)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	p, ok := r.data[id]
 	if !ok {
-		return errors.New("not found")
+		return domain.ErrNotFound
 	}
 	p.ActivationCode = &code
-	// you can store expiresAt in your model if a field exists; mock ignores it safely
+	// ignore expiresAt in mock unless your model stores it
 	return nil
 }
 
@@ -752,12 +750,12 @@ func (r *MockPaymentRepo) FindByActivationCode(ctx context.Context, tx repositor
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, p := range r.data {
-		if *p.ActivationCode == code {
+		if p.ActivationCode != nil && *p.ActivationCode == code { // nil-safe
 			cp := *p
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 // ---- Mock PurchaseRepository ----
@@ -833,7 +831,7 @@ func (r *MockModelPricingRepo) Seed(mp *model.ModelPricing) {
 
 func (r *MockModelPricingRepo) GetByModelName(ctx context.Context, tx repository.Tx, model string) (*model.ModelPricing, error) {
 	if r.GetByModelNameFunc != nil {
-		return r.GetByModelNameFunc(ctx, model)
+		return r.GetByModelNameFunc(ctx, model) // tx ignored in mock
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -841,7 +839,7 @@ func (r *MockModelPricingRepo) GetByModelName(ctx context.Context, tx repository
 		cp := *p
 		return &cp, nil
 	}
-	return nil, errors.New("not found")
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockModelPricingRepo) ListActive(ctx context.Context, tx repository.Tx) ([]*model.ModelPricing, error) {
@@ -878,12 +876,12 @@ func (r *MockModelPricingRepo) Create(ctx context.Context, tx repository.Tx, p *
 
 func (r *MockModelPricingRepo) Update(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
 	if r.UpdateFunc != nil {
-		return r.UpdateFunc(ctx, p)
+		return r.UpdateFunc(ctx, p) // tx ignored in mock
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.byModel[strings.ToLower(p.ModelName)]; !ok {
-		return errors.New("not found")
+		return domain.ErrNotFound
 	}
 	cp := *p
 	r.byModel[strings.ToLower(p.ModelName)] = &cp
@@ -973,7 +971,7 @@ func (r *MockChatSessionRepo) FindActiveByUser(ctx context.Context, tx repositor
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockChatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.ChatSession, error) {
@@ -987,7 +985,7 @@ func (r *MockChatSessionRepo) FindByID(ctx context.Context, tx repository.Tx, id
 		cp.Messages = cloneMessages(r.msgByID[id])
 		return &cp, nil
 	}
-	return nil, nil
+	return nil, domain.ErrNotFound
 }
 
 func (r *MockChatSessionRepo) FindUserBySessionID(ctx context.Context, tx repository.Tx, sessionID string) (*model.User, error) {
@@ -1020,7 +1018,7 @@ func (r *MockChatSessionRepo) UpdateStatus(ctx context.Context, tx repository.Tx
 		s.UpdatedAt = now()
 		return nil
 	}
-	return errors.New("not found")
+	return domain.ErrNotFound
 }
 
 func (r *MockChatSessionRepo) ListByUser(ctx context.Context, tx repository.Tx, userID string, offset, limit int) ([]*model.ChatSession, error) {
@@ -1123,7 +1121,7 @@ func (r *MockAIJobRepo) FetchAndMarkProcessing(ctx context.Context) (*model.AIJo
 	}
 
 	if oldestJob == nil {
-		return nil, nil // No pending jobs found
+		return nil, domain.ErrNotFound // No pending jobs found
 	}
 
 	// Mark as processing and return

@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
@@ -120,6 +121,49 @@ func TestChatUseCase_SendChatMessage(t *testing.T) {
 	mockCodeRepo := NewMockActivationCodeRepo()
 	mockSubRepo := NewMockSubscriptionRepo()
 	mockSubPlanRepo := NewMockPlanRepo()
+
+	now := time.Now()
+	start := now.Add(-time.Hour)
+	exp := now.Add(24 * time.Hour)
+
+	// Make the SubscriptionUseCase see an ACTIVE subscription for user-1
+	mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
+		if userID != "user-1" {
+			return nil, domain.ErrNotFound
+		}
+		return &model.UserSubscription{
+			ID:               "sub-1",
+			UserID:           "user-1",
+			PlanID:           "plan-1",
+			CreatedAt:        now,
+			ScheduledStartAt: nil,
+			StartAt:          &start,
+			ExpiresAt:        &exp,
+			RemainingCredits: 100, // ensure UC passes any credit checks
+			Status:           model.SubscriptionStatusActive, // adjust name if your enum differs
+		}, nil
+	}
+
+	// Optional: if UC decrements credits during send, make it succeed
+	mockSubRepo.UpdateRemainingCreditsFunc = func(ctx context.Context, tx repository.Tx, id string, delta int64) error {
+		return nil
+	}
+
+	// Return a plan which allows sending
+	mockSubPlanRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
+		if id != "plan-1" {
+			return nil, domain.ErrNotFound
+		}
+		return &model.SubscriptionPlan{
+			ID:              "plan-1",
+			Name:            "Pro",
+			DurationDays:    30,
+			Credits:         100_000,            // total plan credits (fits whatever your UC expects)
+			PriceIRR:        1_000_000,          // irrelevant for this test
+			SupportedModels: []string{"gpt-4o"}, // include at least one model
+			CreatedAt:       now,
+		}, nil
+	}
 
 	subUC := usecase.NewSubscriptionUseCase(mockSubRepo, mockSubPlanRepo, mockCodeRepo, mockTxManager, testLogger)
 
@@ -324,7 +368,7 @@ func TestChatUseCase_ListModels(t *testing.T) {
 		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
 			return &model.UserSubscription{PlanID: "empty-plan"}, nil
 		}
-		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
 			return &model.SubscriptionPlan{SupportedModels: []string{}}, nil // Plan has an empty list
 		}
 
@@ -346,7 +390,7 @@ func TestChatUseCase_ListModels(t *testing.T) {
 		mockSubRepo.FindActiveByUserFunc = func(ctx context.Context, tx repository.Tx, userID string) (*model.UserSubscription, error) {
 			return &model.UserSubscription{PlanID: "pro-plan"}, nil
 		}
-		mockPlanRepo.FindByIDFunc = func(ctx context.Context, id string) (*model.SubscriptionPlan, error) {
+		mockPlanRepo.FindByIDFunc = func(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
 			return &model.SubscriptionPlan{SupportedModels: []string{"gpt-4o", "disabled-model"}}, nil
 		}
 		mockPricingRepo.ListActiveFunc = func(ctx context.Context) ([]*model.ModelPricing, error) {
