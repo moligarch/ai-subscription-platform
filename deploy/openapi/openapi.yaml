@@ -34,6 +34,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '501':
           $ref: '#/components/responses/NotImplemented'
     post:
@@ -80,6 +82,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '501':
@@ -116,6 +120,8 @@ paths:
       responses:
         '204':
           description: No Content
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':

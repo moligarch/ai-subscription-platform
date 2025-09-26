@@ -564,6 +564,15 @@ func (response ListModels200JSONResponse) VisitListModelsResponse(w http.Respons
 	return json.NewEncoder(w).Encode(response)
 }
 
+type ListModels400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ListModels400JSONResponse) VisitListModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListModels501JSONResponse struct{ NotImplementedJSONResponse }
 
 func (response ListModels501JSONResponse) VisitListModelsResponse(w http.ResponseWriter) error {
@@ -642,6 +651,15 @@ func (response DeleteModel204Response) VisitDeleteModelResponse(w http.ResponseW
 	return nil
 }
 
+type DeleteModel400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response DeleteModel400JSONResponse) VisitDeleteModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteModel404JSONResponse struct{ NotFoundJSONResponse }
 
 func (response DeleteModel404JSONResponse) VisitDeleteModelResponse(w http.ResponseWriter) error {
@@ -682,6 +700,15 @@ type GetModel200JSONResponse Model
 func (response GetModel200JSONResponse) VisitGetModelResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetModel400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetModel400JSONResponse) VisitGetModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
 
 	return json.NewEncoder(w).Encode(response)
 }
