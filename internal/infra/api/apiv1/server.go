@@ -5,8 +5,10 @@ import (
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 )
 
 // Server holds dependencies for v1 API handlers.
@@ -160,10 +162,50 @@ func (s *Server) DeleteModel(ctx context.Context, req DeleteModelRequestObject) 
 
 // GenerateActivationCodes: POST /api/v1/activation-codes/generate
 func (s *Server) GenerateActivationCodes(ctx context.Context, req GenerateActivationCodesRequestObject) (GenerateActivationCodesResponseObject, error) {
-	// Implement in Step 4C.
-	return GenerateActivationCodes501JSONResponse{
-		NotImplementedJSONResponse: NotImplementedJSONResponse{Message: "not implemented"},
-	}, nil
+	body := req.Body
+	if body == nil {
+		return GenerateActivationCodes400JSONResponse{BadRequestJSONResponse{Message: "missing body"}}, nil
+	}
+	if s.PlanUC == nil {
+		return GenerateActivationCodes501JSONResponse{
+			NotImplementedJSONResponse: NotImplementedJSONResponse{Message: "not implemented"},
+		}, nil
+	}
+
+	codes, err := s.PlanUC.GenerateActivationCodes(ctx, body.PlanId, int(body.Count))
+	if err != nil {
+		switch err {
+		case domain.ErrPlanNotFound:
+			return GenerateActivationCodes404JSONResponse{NotFoundJSONResponse{Message: "not found"}}, nil
+		case domain.ErrInvalidArgument:
+			return GenerateActivationCodes422JSONResponse{UnprocessableJSONResponse{Message: "invalid argument", Fields: nil}}, nil
+		default:
+			return GenerateActivationCodes400JSONResponse{BadRequestJSONResponse{Message: err.Error()}}, nil
+		}
+	}
+
+	resp := ActivationCodeGenerateResponse{
+		BatchId: uuid.New().String(),
+	}
+	if len(codes) > 0 {
+		// Match the inline anonymous type generated for ActivationCodeGenerateResponse.codes
+		items := make([]struct {
+			Code      string     `json:"code"`
+			ExpiresAt *time.Time `json:"expires_at,omitempty"`
+		}, 0, len(codes))
+
+		for _, c := range codes {
+			items = append(items, struct {
+				Code      string     `json:"code"`
+				ExpiresAt *time.Time `json:"expires_at,omitempty"`
+			}{
+				Code:      c,
+				ExpiresAt: nil, // your PlanUseCase doesn’t emit expiries
+			})
+		}
+		resp.Codes = items
+	}
+	return GenerateActivationCodes201JSONResponse(resp), nil
 }
 
 // toAPIModel maps the domain pricing row into the API shape with currency=IRR.
