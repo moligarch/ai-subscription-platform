@@ -9,6 +9,10 @@ UI_DIR := ui
 DEPLOY_UI_DIR := deploy/admin-ui
 MAIN_PKG ?= ./cmd/app
 
+OPENAPI_SPEC := deploy/openapi/openapi.yaml
+OPENAPI_CFG  := deploy/openapi/oapi-codegen.yaml
+OAPI_OUT_DIR := internal/infra/api/apiv1
+
 PROJECT := $(notdir $(CURDIR))
 COMPOSE_NETWORK := $(PROJECT)_app_net
 
@@ -102,6 +106,16 @@ e2e: ## Run e2e-setup tool on compose network so it can reach postgres
 
 test: ## Run unit tests in a temporary golang container
 	docker run --rm -it -v "$(PWD)":/src -w /src golang:1.24-alpine sh -c 'go test ./...'
+
+
+generate-openapi: ## Generates server + models to internal/infra/api/apiv1/oapi.gen.go
+	mkdir -p $(OAPI_OUT_DIR)
+	oapi-codegen -config $(OPENAPI_CFG) $(OPENAPI_SPEC)
+
+
+check-openapi: ## Lint spec if you use redocly (optional)
+	@which redocly >/dev/null 2>&1 || { echo "Install redocly: npm i -g @redocly/cli"; exit 1; }
+	redocly lint $(OPENAPI_SPEC)
 
 # --- Housekeeping ---
 clean: clean-ui ## Remove container and assosiated file + UI deploy directory

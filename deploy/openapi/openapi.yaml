@@ -1,0 +1,351 @@
+openapi: 3.0.3
+info:
+  title: SibGPT Admin API
+  version: 1.0.0
+servers:
+  - url: https://admin.sibgpt.app
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/models:
+    get:
+      summary: List model pricing
+      operationId: listModels
+      tags: [Models]
+      parameters:
+        - in: query
+          name: q
+          required: false
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 64
+          description: Optional case-insensitive substring filter for model name
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Model'
+    post:
+      summary: Create model pricing
+      operationId: createModel
+      tags: [Models]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelCreate'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+
+  /api/v1/models/{name}:
+    parameters:
+      - in: path
+        name: name
+        required: true
+        schema:
+          $ref: '#/components/schemas/ModelName'
+    get:
+      summary: Get model pricing by name
+      operationId: getModel
+      tags: [Models]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Update model pricing
+      operationId: updateModel
+      tags: [Models]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelUpdate'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+    delete:
+      summary: Delete model pricing
+      operationId: deleteModel
+      tags: [Models]
+      responses:
+        '204':
+          description: No Content
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /api/v1/activation-codes/generate:
+    post:
+      summary: Generate activation codes for a plan
+      operationId: generateActivationCodes
+      tags: [ActivationCodes]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivationCodeGenerateRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivationCodeGenerateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/Unprocessable'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unprocessable:
+      description: Validation errors
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+              - message
+              - fields
+            properties:
+              message:
+                type: string
+              fields:
+                type: array
+                items:
+                  type: object
+                  required:
+                    - field
+                    - error
+                  properties:
+                    field:
+                      type: string
+                    error:
+                      type: string
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+
+    ModelName:
+      type: string
+      minLength: 2
+      maxLength: 64
+      pattern: '^[a-zA-Z0-9._:-]+$'
+
+    PriceMicros:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Price stored in micros of IRR. One IRR equals 1000000 micros.
+
+    Model:
+      type: object
+      required:
+        - name
+        - input_price_micros
+        - output_price_micros
+        - currency
+        - updated_at
+      properties:
+        name:
+          $ref: '#/components/schemas/ModelName'
+        input_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        output_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          example: IRR
+        updated_at:
+          type: string
+          format: date-time
+
+    ModelCreate:
+      type: object
+      required:
+        - name
+        - input_price_micros
+        - output_price_micros
+      properties:
+        name:
+          $ref: '#/components/schemas/ModelName'
+        input_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        output_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+          default: IRR
+
+    ModelUpdate:
+      type: object
+      properties:
+        input_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        output_price_micros:
+          $ref: '#/components/schemas/PriceMicros'
+        currency:
+          type: string
+          minLength: 3
+          maxLength: 3
+      minProperties: 1
+
+    ActivationCodeGenerateRequest:
+      type: object
+      required:
+        - plan_id
+        - count
+      properties:
+        plan_id:
+          type: string
+          minLength: 8
+          maxLength: 64
+          description: ULID or UUID of the plan
+        count:
+          type: integer
+          minimum: 1
+          maximum: 10000
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 3650
+        notes:
+          type: string
+          maxLength: 256
+
+    ActivationCode:
+      type: object
+      required:
+        - code
+        - plan_id
+        - status
+        - expires_at
+        - created_at
+      properties:
+        code:
+          type: string
+          minLength: 8
+          maxLength: 64
+          description: Opaque activation code string
+        plan_id:
+          type: string
+        batch_id:
+          type: string
+          description: ULID identifying the generation batch
+        status:
+          type: string
+          enum:
+            - unused
+            - used
+            - expired
+            - revoked
+        expires_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ActivationCodeGenerateResponse:
+      type: object
+      required:
+        - batch_id
+        - codes
+      properties:
+        batch_id:
+          type: string
+          description: ULID of the generated batch
+        codes:
+          type: array
+          items:
+            type: object
+            required:
+              - code
+            properties:
+              code:
+                type: string
+              expires_at:
+                type: string
+                format: date-time

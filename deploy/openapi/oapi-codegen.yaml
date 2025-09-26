@@ -1,0 +1,8 @@
+package: apiv1
+output: internal/infra/api/apiv1/oapi.gen.go
+generate:
+  models: true
+  chi-server: true
+  strict-server: true
+compatibility:
+  always-prefix-enum-values: true
