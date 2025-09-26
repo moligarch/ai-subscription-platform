@@ -136,4 +136,4 @@ check-openapi: ## Lint spec if you use redocly (optional)
 clean: clean-ui ## Remove container and assosiated file + UI deploy directory
 	$(DC) down -v
 
-all: infra-up run-prod ## Convenience: start infra and run production app
+all: infra-up run-prod deploy-ui ## Convenience: start infra and run production app
