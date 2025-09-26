@@ -1,10 +1,10 @@
 global:
-  scrape_interval: 30s
+  scrape_interval: 20s
   scrape_timeout: 10s
   evaluation_interval: 30s
 
 scrape_configs:
   # Scrape your Go app via Docker DNS (recommended if your app runs in the same compose)
-  - job_name: "telegram-ai"
+  - job_name: "app"
     static_configs:
       - targets: ["app:8080"]  # e.g. "app:8080"
