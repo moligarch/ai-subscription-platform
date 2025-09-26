@@ -69,6 +69,11 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_SERVER_ROOT_URL=https://admin.sibgpt.app/monitor
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      # optional if behind a proxy terminating TLS:
+      # - GF_SERVER_DOMAIN=admin.sibgpt.app
+      # - GF_SERVER_PROTOCOL=https
     networks:
       - app_net
 

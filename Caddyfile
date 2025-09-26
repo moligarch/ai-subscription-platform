@@ -12,6 +12,11 @@ https://admin.sibgpt.app {
     reverse_proxy app:8080
   }
 
+  # Grafana on a sub-path (do NOT strip prefix; Grafana expects /monitor)
+  handle /monitor/* {
+    reverse_proxy grafana:3000
+  }
+
   # Serve SPA and fallback to index.html for client-side routing
   handle {
     try_files {path} /index.html
@@ -32,9 +37,4 @@ https://payment.sibgpt.app {
     try_files {path} /index.html
     file_server
   }
-}
-
-# Grafana
-https://grafana.sibgpt.app {
-  reverse_proxy grafana:3000
 }
