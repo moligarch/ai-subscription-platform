@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,6 +27,8 @@ type PaymentUseCase interface {
 	ConfirmAuto(ctx context.Context, authority string) (*model.Payment, error)
 	// Totals per period (optional, used by stats/panel)
 	SumByPeriod(ctx context.Context, tx repository.Tx, period string) (int64, error)
+
+	FindUserIDByAuthority(ctx context.Context, authority string) (string, error)
 }
 
 // Compile-time check
@@ -227,4 +230,20 @@ func (u *paymentUC) confirmPaymentInTx(ctx context.Context, tx repository.Tx, p 
 	metrics.IncPayment("succeeded")
 	metrics.AddPaymentRevenue(p.Currency, p.Amount)
 	return p, nil
+}
+
+func (p *paymentUC) FindUserIDByAuthority(ctx context.Context, authority string) (string, error) {
+	a := strings.TrimSpace(authority)
+	if a == "" {
+		return "", domain.ErrInvalidArgument
+	}
+	// Best source of truth is the purchase created before redirect (authority is stored there)
+	pur, err := p.payments.FindByAuthority(ctx, repository.NoTX, a)
+	if err != nil {
+		return "", err
+	}
+	if pur == nil || pur.UserID == "" {
+		return "", domain.ErrNotFound
+	}
+	return pur.UserID, nil
 }

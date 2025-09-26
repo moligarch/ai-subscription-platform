@@ -212,7 +212,7 @@ func main() {
 
 	// ---- HTTP server with guards ----
 	// Payment/API server (now SPA-first: only /api/v1/payment/verify here + metrics)
-	paymentAPIServer := api.NewServer(paymentUC, userRepo, botAdapter, cfg.Bot.Username)
+	paymentAPIServer := api.NewServer(paymentUC, userRepo, botAdapter, cfg.Bot.Username, translator, logger)
 
 	// Admin Panel API server (your existing JSON admin endpoints)
 	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, logger)
