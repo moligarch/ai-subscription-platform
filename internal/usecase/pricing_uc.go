@@ -37,7 +37,7 @@ var _ PricingUseCase = (*pricingUC)(nil)
 
 type pricingUC struct {
 	prices repository.ModelPricingRepository
-	tx     repository.TransactionManager
+	tm     repository.TransactionManager
 	log    *zerolog.Logger
 }
 
@@ -45,12 +45,12 @@ type pricingUC struct {
 // tx and logger may be nil (the implementation tolerates NoTX + noop logging).
 func NewPricingUseCase(
 	prices repository.ModelPricingRepository,
-	tx repository.TransactionManager,
+	tm repository.TransactionManager,
 	logger *zerolog.Logger,
 ) PricingUseCase {
 	return &pricingUC{
 		prices: prices,
-		tx:     tx,
+		tm:     tm,
 		log:    logger,
 	}
 }
