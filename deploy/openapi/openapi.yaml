@@ -34,6 +34,8 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/Model'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
     post:
       summary: Create model pricing
       operationId: createModel
@@ -57,6 +59,8 @@ paths:
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /api/v1/models/{name}:
     parameters:
@@ -78,6 +82,8 @@ paths:
                 $ref: '#/components/schemas/Model'
         '404':
           $ref: '#/components/responses/NotFound'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
     put:
       summary: Update model pricing
       operationId: updateModel
@@ -101,6 +107,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
     delete:
       summary: Delete model pricing
       operationId: deleteModel
@@ -112,6 +120,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
   /api/v1/activation-codes/generate:
     post:
@@ -137,6 +147,8 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/Unprocessable'
+        '501':
+          $ref: '#/components/responses/NotImplemented'
 
 components:
   securitySchemes:
@@ -190,6 +202,12 @@ components:
                       type: string
     Unauthorized:
       description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotImplemented:
+      description: Not Implemented
       content:
         application/json:
           schema:

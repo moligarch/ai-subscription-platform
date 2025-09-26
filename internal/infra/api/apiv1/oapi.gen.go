@@ -95,6 +95,9 @@ type Conflict = Error
 // NotFound defines model for NotFound.
 type NotFound = Error
 
+// NotImplemented defines model for NotImplemented.
+type NotImplemented = Error
+
 // Unprocessable defines model for Unprocessable.
 type Unprocessable struct {
 	Fields []struct {
@@ -479,6 +482,8 @@ type ConflictJSONResponse Error
 
 type NotFoundJSONResponse Error
 
+type NotImplementedJSONResponse Error
+
 type UnprocessableJSONResponse struct {
 	Fields []struct {
 		Error string `json:"error"`
@@ -531,6 +536,15 @@ func (response GenerateActivationCodes422JSONResponse) VisitGenerateActivationCo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type GenerateActivationCodes501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response GenerateActivationCodes501JSONResponse) VisitGenerateActivationCodesResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type ListModelsRequestObject struct {
 	Params ListModelsParams
 }
@@ -546,6 +560,15 @@ type ListModels200JSONResponse struct {
 func (response ListModels200JSONResponse) VisitListModelsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListModels501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response ListModels501JSONResponse) VisitListModelsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -594,6 +617,15 @@ func (response CreateModel422JSONResponse) VisitCreateModelResponse(w http.Respo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type CreateModel501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response CreateModel501JSONResponse) VisitCreateModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type DeleteModelRequestObject struct {
 	Name ModelName `json:"name"`
 }
@@ -628,6 +660,15 @@ func (response DeleteModel409JSONResponse) VisitDeleteModelResponse(w http.Respo
 	return json.NewEncoder(w).Encode(response)
 }
 
+type DeleteModel501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response DeleteModel501JSONResponse) VisitDeleteModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
 type GetModelRequestObject struct {
 	Name ModelName `json:"name"`
 }
@@ -650,6 +691,15 @@ type GetModel404JSONResponse struct{ NotFoundJSONResponse }
 func (response GetModel404JSONResponse) VisitGetModelResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type GetModel501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response GetModel501JSONResponse) VisitGetModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
 
 	return json.NewEncoder(w).Encode(response)
 }
@@ -695,6 +745,15 @@ type UpdateModel422JSONResponse struct{ UnprocessableJSONResponse }
 func (response UpdateModel422JSONResponse) VisitUpdateModelResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateModel501JSONResponse struct{ NotImplementedJSONResponse }
+
+func (response UpdateModel501JSONResponse) VisitUpdateModelResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(501)
 
 	return json.NewEncoder(w).Encode(response)
 }
