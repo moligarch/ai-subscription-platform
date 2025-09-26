@@ -11,6 +11,7 @@ require (
 	github.com/jackc/pgx/v4 v4.18.3
 	github.com/oapi-codegen/oapi-codegen/v2 v2.3.0
 	github.com/oapi-codegen/runtime v1.1.2
+	github.com/oklog/ulid/v2 v2.1.1
 	github.com/openai/openai-go/v2 v2.1.1
 	github.com/pkoukk/tiktoken-go v0.1.7
 	github.com/prometheus/client_golang v1.23.0

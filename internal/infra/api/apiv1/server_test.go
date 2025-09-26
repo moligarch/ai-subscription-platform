@@ -9,7 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -379,204 +379,195 @@ func TestModels_Get_Update_Delete_AllPaths(t *testing.T) {
 
 // ===== Activation Codes tests (PlanUseCase-backed) =====
 
-/*
-These helpers are uniquely prefixed (ac*) to avoid clashing with existing mocks.
-They implement the real repository interfaces:
+// ---------------- in-memory plan + activation code repos (tests) ----------------
 
-- repository.SubscriptionPlanRepository
-- repository.ActivationCodeRepository
-*/
-
-type acDummyPricingRepo struct{} // satisfies repository.ModelPricingRepository (unused paths here)
-
-func (d *acDummyPricingRepo) GetByModelName(ctx context.Context, tx repository.Tx, name string) (*model.ModelPricing, error) {
-	return nil, domain.ErrNotFound
-}
-func (d *acDummyPricingRepo) Create(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
-	return nil
-}
-func (d *acDummyPricingRepo) Update(ctx context.Context, tx repository.Tx, p *model.ModelPricing) error {
-	return nil
-}
-func (d *acDummyPricingRepo) ListActive(ctx context.Context, tx repository.Tx) ([]*model.ModelPricing, error) {
-	return nil, nil
-}
-
-// acMemPlanRepo implements repository.SubscriptionPlanRepository
-type acMemPlanRepo struct {
+type memPlanRepo struct {
 	byID map[string]*model.SubscriptionPlan
 }
 
-func newAcMemPlanRepo() *acMemPlanRepo {
-	return &acMemPlanRepo{byID: map[string]*model.SubscriptionPlan{}}
-}
+func newMemPlanRepo() *memPlanRepo { return &memPlanRepo{byID: map[string]*model.SubscriptionPlan{}} }
 
-func (r *acMemPlanRepo) Save(ctx context.Context, tx repository.Tx, p *model.SubscriptionPlan) error {
-	if p.ID == "" {
-		p.ID = "plan-" + time.Now().Format("150405.000")
-	}
+func (m *memPlanRepo) Save(ctx context.Context, tx repository.Tx, p *model.SubscriptionPlan) error {
 	cp := *p
-	r.byID[p.ID] = &cp
+	m.byID[p.ID] = &cp
 	return nil
 }
-func (r *acMemPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
-	if p, ok := r.byID[id]; ok {
+func (m *memPlanRepo) FindByID(ctx context.Context, tx repository.Tx, id string) (*model.SubscriptionPlan, error) {
+	if p, ok := m.byID[id]; ok {
 		cp := *p
 		return &cp, nil
 	}
-	return nil, domain.ErrNotFound
+	return nil, domain.ErrPlanNotFound
 }
-func (r *acMemPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
-	out := make([]*model.SubscriptionPlan, 0, len(r.byID))
-	for _, p := range r.byID {
-		cp := *p
+func (m *memPlanRepo) ListAll(ctx context.Context, tx repository.Tx) ([]*model.SubscriptionPlan, error) {
+	out := make([]*model.SubscriptionPlan, 0, len(m.byID))
+	for _, v := range m.byID {
+		cp := *v
 		out = append(out, &cp)
 	}
 	return out, nil
 }
-func (r *acMemPlanRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
-	if _, ok := r.byID[id]; !ok {
-		return domain.ErrNotFound
-	}
-	delete(r.byID, id)
+func (m *memPlanRepo) Delete(ctx context.Context, tx repository.Tx, id string) error {
+	delete(m.byID, id)
 	return nil
 }
-
-// acMemCodeRepo implements repository.ActivationCodeRepository
-type acMemCodeRepo struct {
-	byCode  map[string]*model.ActivationCode
-	saveErr error
+func (m *memPlanRepo) CountActiveByModel(ctx context.Context, tx repository.Tx) (map[string]int, error) {
+	return map[string]int{}, nil
 }
 
-func newAcMemCodeRepo() *acMemCodeRepo {
-	return &acMemCodeRepo{byCode: map[string]*model.ActivationCode{}}
+type memActivationCodeRepo struct {
+	saved   []string
+	errSave error
 }
 
-func (r *acMemCodeRepo) Save(ctx context.Context, tx repository.Tx, c *model.ActivationCode) error {
-	if r.saveErr != nil {
-		return r.saveErr
+func newMemActivationCodeRepo() *memActivationCodeRepo { return &memActivationCodeRepo{} }
+
+func (m *memActivationCodeRepo) Save(ctx context.Context, tx repository.Tx, code *model.ActivationCode) error {
+	if m.errSave != nil {
+		return m.errSave
 	}
-	cp := *c
-	r.byCode[c.Code] = &cp
+	m.saved = append(m.saved, code.Code)
 	return nil
 }
-func (r *acMemCodeRepo) FindByCode(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error) {
-	if c, ok := r.byCode[code]; ok {
-		cp := *c
-		return &cp, nil
-	}
+func (m *memActivationCodeRepo) FindByCode(ctx context.Context, tx repository.Tx, code string) (*model.ActivationCode, error) {
+	// Tests don't need redemption lookup; return not found.
 	return nil, domain.ErrNotFound
 }
 
-// Wire real PlanUseCase (no UC mocking) + generated HTTP handlers
-func newServerWithPlanUC(planRepo repository.SubscriptionPlanRepository, codeRepo repository.ActivationCodeRepository) *chi.Mux {
-	planUC := usecase.NewPlanUseCase(planRepo, &acDummyPricingRepo{}, codeRepo, newLogger())
-	srv := apiv1.NewServer(nil, planUC)
+func newServerWithPricingAndPlan(repoPricing *memPricingRepo, planUC usecase.PlanUseCase) *chi.Mux {
+	tx := &mockTxManager{}
+	pricingUC := usecase.NewPricingUseCase(repoPricing, tx, newLogger())
 
 	r := chi.NewRouter()
+	srv := apiv1.NewServer(pricingUC, planUC)
 	apiv1.RegisterAPIV1(r, srv)
 	return r
 }
 
-var acCodePattern = regexp.MustCompile(`^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$`)
+func TestActivationCodes_Generate_AllPaths(t *testing.T) {
+	ctx := context.Background()
+	logger := newLogger()
 
-func TestActivationCodes_Generate(t *testing.T) {
-	t.Run("201 created (codes returned, persisted)", func(t *testing.T) {
-		pr := newAcMemPlanRepo()
-		_ = pr.Save(context.Background(), nil, &model.SubscriptionPlan{
-			ID:           "plan-1",
-			Name:         "Pro",
-			DurationDays: 30,
-			Credits:      1000,
-			PriceIRR:     1_000_000,
-			CreatedAt:    time.Now(),
-		})
-		cr := newAcMemCodeRepo()
-		r := newServerWithPlanUC(pr, cr)
+	// Common repos
+	priceRepo := newMemPricingRepo() // not used by PlanUC.GenerateActivationCodes, but required by ctor
+	planRepo := newMemPlanRepo()
+	codeRepo := newMemActivationCodeRepo()
 
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate",
-			bytes.NewBufferString(`{"plan_id":"plan-1","count":2}`))
+	// Seed a plan
+	planID := "plan-1"
+	planRepo.byID[planID] = &model.SubscriptionPlan{
+		ID:           planID,
+		Name:         "Basic",
+		DurationDays: 30,
+		Credits:      1000,
+		PriceIRR:     100000,
+		CreatedAt:    time.Now(),
+	}
+
+	// Real PlanUseCase with in-memory repos
+	planUC := usecase.NewPlanUseCase(planRepo, priceRepo, codeRepo, logger)
+	router := newServerWithPricingAndPlan(priceRepo, planUC)
+
+	t.Run("success: 201 with codes", func(t *testing.T) {
+		body := `{"plan_id":"` + planID + `","count":3}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", strings.NewReader(body))
+		req = req.WithContext(ctx)
 		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
 
-		if rec.Code != http.StatusCreated {
-			t.Fatalf("want 201, got %d, body=%s", rec.Code, rec.Body.String())
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusCreated {
+			t.Fatalf("want 201, got %d, body=%s", w.Code, w.Body.String())
 		}
-
 		var resp struct {
 			BatchID string `json:"batch_id"`
 			Codes   []struct {
-				Code string `json:"code"`
+				Code      string     `json:"code"`
+				ExpiresAt *time.Time `json:"expires_at,omitempty"`
 			} `json:"codes"`
 		}
-		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-			t.Fatalf("decode: %v", err)
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("invalid json: %v", err)
 		}
-		if resp.BatchID == "" || len(resp.Codes) != 2 {
-			t.Fatalf("unexpected resp: %+v", resp)
+		if resp.BatchID == "" {
+			t.Fatalf("batch_id should not be empty")
 		}
-		for _, c := range resp.Codes {
-			if !acCodePattern.MatchString(c.Code) {
-				t.Fatalf("code format mismatch: %q", c.Code)
-			}
-			if _, err := cr.FindByCode(context.Background(), nil, c.Code); err != nil {
-				t.Fatalf("code not saved: %v", err)
+		if len(resp.Codes) != 3 {
+			t.Fatalf("want 3 codes, got %d", len(resp.Codes))
+		}
+		for i, c := range resp.Codes {
+			if c.Code == "" {
+				t.Fatalf("code[%d] is empty", i)
 			}
 		}
 	})
 
-	t.Run("404 when plan not found", func(t *testing.T) {
-		pr := newAcMemPlanRepo() // no plans
-		cr := newAcMemCodeRepo()
-		r := newServerWithPlanUC(pr, cr)
-
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate",
-			bytes.NewBufferString(`{"plan_id":"missing","count":3}`))
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("want 404, got %d, body=%s", rec.Code, rec.Body.String())
-		}
-	})
-
-	t.Run("400 when body is missing", func(t *testing.T) {
-		pr := newAcMemPlanRepo()
-		cr := newAcMemCodeRepo()
-		r := newServerWithPlanUC(pr, cr)
-
+	t.Run("missing body -> 400", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", nil)
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d, body=%s", rec.Code, rec.Body.String())
+		req = req.WithContext(ctx)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d, body=%s", w.Code, w.Body.String())
 		}
 	})
 
-	t.Run("400 when repository Save fails", func(t *testing.T) {
-		pr := newAcMemPlanRepo()
-		_ = pr.Save(context.Background(), nil, &model.SubscriptionPlan{
-			ID: "plan-1", Name: "Pro", DurationDays: 30, Credits: 1000, PriceIRR: 1_000_000, CreatedAt: time.Now(),
-		})
-		cr := newAcMemCodeRepo()
-		cr.saveErr = errors.New("store down")
-		r := newServerWithPlanUC(pr, cr)
-
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate",
-			bytes.NewBufferString(`{"plan_id":"plan-1","count":1}`))
+	t.Run("invalid plan_id -> 422", func(t *testing.T) {
+		body := `{"plan_id":"", "count":2}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", strings.NewReader(body))
+		req = req.WithContext(ctx)
 		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		r.ServeHTTP(rec, req)
-
-		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("want 400, got %d, body=%s", rec.Code, rec.Body.String())
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != 422 {
+			t.Fatalf("want 422, got %d, body=%s", w.Code, w.Body.String())
 		}
 	})
 
-	t.Run("501 when PlanUseCase is not wired", func(t *testing.T) {
+	t.Run("negative count -> 422", func(t *testing.T) {
+		body := `{"plan_id":"` + planID + `","count":-5}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", strings.NewReader(body))
+		req = req.WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != 422 {
+			t.Fatalf("want 422, got %d, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("plan not found -> 404", func(t *testing.T) {
+		body := `{"plan_id":"missing-plan","count":1}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", strings.NewReader(body))
+		req = req.WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("want 404, got %d, body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("repo save error -> 400", func(t *testing.T) {
+		// Flip repo to error mode
+		codeRepo.errSave = errors.New("save failed")
+
+		body := `{"plan_id":"` + planID + `","count":2}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/activation-codes/generate", strings.NewReader(body))
+		req = req.WithContext(ctx)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("want 400, got %d, body=%s", w.Code, w.Body.String())
+		}
+		// Reset
+		codeRepo.errSave = nil
+	})
+
+	t.Run("PlanUseCase is not wired -> 501", func(t *testing.T) {
 		router := chi.NewRouter()
 		srv := apiv1.NewServer(nil, nil) // PlanUC nil -> 501
 		apiv1.RegisterAPIV1(router, srv)

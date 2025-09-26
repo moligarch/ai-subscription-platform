@@ -2,13 +2,14 @@ package apiv1
 
 import (
 	"context"
+	"strings"
 	"telegram-ai-subscription/internal/domain"
 	"telegram-ai-subscription/internal/domain/model"
 	"telegram-ai-subscription/internal/usecase"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
+	"github.com/oklog/ulid/v2"
 )
 
 // Server holds dependencies for v1 API handlers.
@@ -52,7 +53,7 @@ func jsonError(msg string) Error { return Error{Message: msg} }
 
 func mapDomainErr(err error) (code int, payload Error) {
 	switch err {
-	case domain.ErrNotFound:
+	case domain.ErrNotFound, domain.ErrPlanNotFound:
 		return 404, jsonError("not found")
 	case domain.ErrAlreadyExists:
 		return 409, jsonError("already exists")
@@ -158,52 +159,72 @@ func (s *Server) DeleteModel(ctx context.Context, req DeleteModelRequestObject) 
 	return DeleteModel204Response{}, nil
 }
 
-// ---------------------- Activation Codes (Step 4C) ----------------------
+// ---------------------- Activation Codes (Generate) ----------------------
 
 // GenerateActivationCodes: POST /api/v1/activation-codes/generate
 func (s *Server) GenerateActivationCodes(ctx context.Context, req GenerateActivationCodesRequestObject) (GenerateActivationCodesResponseObject, error) {
-	body := req.Body
-	if body == nil {
-		return GenerateActivationCodes400JSONResponse{BadRequestJSONResponse{Message: "missing body"}}, nil
-	}
-	if s.PlanUC == nil {
-		return GenerateActivationCodes501JSONResponse{
-			NotImplementedJSONResponse: NotImplementedJSONResponse{Message: "not implemented"},
+	// Body required
+	if req.Body == nil {
+		return GenerateActivationCodes400JSONResponse{
+			BadRequestJSONResponse{Message: "missing body"},
 		}, nil
 	}
 
-	codes, err := s.PlanUC.GenerateActivationCodes(ctx, body.PlanId, int(body.Count))
+	planID := strings.TrimSpace(req.Body.PlanId)
+	if planID == "" {
+		return GenerateActivationCodes422JSONResponse{
+			UnprocessableJSONResponse{Message: "plan_id is required"},
+		}, nil
+	}
+
+	// Default & validation for count
+	count := req.Body.Count
+	if count < 0 {
+		return GenerateActivationCodes422JSONResponse{
+			UnprocessableJSONResponse{Message: "count must be >= 0"},
+		}, nil
+	}
+	// (Optional) guardrail to avoid abuse
+	if count > 1000 {
+		return GenerateActivationCodes422JSONResponse{
+			UnprocessableJSONResponse{Message: "count too large; max 1000"},
+		}, nil
+	}
+
+	// Delegate to domain use case
+	if s.PlanUC == nil {
+		return GenerateActivationCodes501JSONResponse{NotImplementedJSONResponse(Error{"not implemented"})}, nil
+	}
+	codes, err := s.PlanUC.GenerateActivationCodes(ctx, planID, count)
 	if err != nil {
-		switch err {
-		case domain.ErrPlanNotFound:
-			return GenerateActivationCodes404JSONResponse{NotFoundJSONResponse{Message: "not found"}}, nil
-		case domain.ErrInvalidArgument:
-			return GenerateActivationCodes422JSONResponse{UnprocessableJSONResponse{Message: "invalid argument", Fields: nil}}, nil
+		code, e := mapDomainErr(err)
+		switch code {
+		case 404:
+			return GenerateActivationCodes404JSONResponse{
+				NotFoundJSONResponse(e),
+			}, nil
+		case 422:
+			return GenerateActivationCodes422JSONResponse{
+				UnprocessableJSONResponse{Message: e.Message, Fields: nil},
+			}, nil
 		default:
-			return GenerateActivationCodes400JSONResponse{BadRequestJSONResponse{Message: err.Error()}}, nil
+			return GenerateActivationCodes400JSONResponse{
+				BadRequestJSONResponse(e),
+			}, nil
 		}
 	}
 
+	// Success: 201 with batch ULID and structured codes
 	resp := ActivationCodeGenerateResponse{
-		BatchId: uuid.New().String(),
-	}
-	if len(codes) > 0 {
-		// Match the inline anonymous type generated for ActivationCodeGenerateResponse.codes
-		items := make([]struct {
+		BatchId: ulid.Make().String(),
+		Codes: make([]struct {
 			Code      string     `json:"code"`
 			ExpiresAt *time.Time `json:"expires_at,omitempty"`
-		}, 0, len(codes))
-
-		for _, c := range codes {
-			items = append(items, struct {
-				Code      string     `json:"code"`
-				ExpiresAt *time.Time `json:"expires_at,omitempty"`
-			}{
-				Code:      c,
-				ExpiresAt: nil, // your PlanUseCase doesn’t emit expiries
-			})
-		}
-		resp.Codes = items
+		}, len(codes)),
+	}
+	for i, c := range codes {
+		resp.Codes[i].Code = c
+		// If you plan expirations later, set resp.Codes[i].ExpiresAt here
 	}
 	return GenerateActivationCodes201JSONResponse(resp), nil
 }
