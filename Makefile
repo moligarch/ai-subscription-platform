@@ -104,8 +104,23 @@ e2e: ## Run e2e-setup tool on compose network so it can reach postgres
 	  golang:1.24-alpine \
 	  sh -c 'go mod download && go run ./cmd/e2e-setup --config /etc/app/config.yaml'
 
-test: ## Run unit tests in a temporary golang container
-	docker run --rm -it -v "$(PWD)":/src -w /src golang:1.24-alpine sh -c 'go test ./...'
+
+# Default to running all integration tests if 'package' is not specified.
+TEST_PATH := ./...
+ifeq ($(package),postgres)
+	TEST_PATH := ./internal/infra/db/postgres
+endif
+ifeq ($(package),web)
+	TEST_PATH := ./internal/infra/web
+endif
+
+integration-test: ## Run integration tests. Use 'package=postgres' or 'package=web' to focus."
+	@echo "Running integration tests for package(s): $(TEST_PATH)..."
+	@go test -v -race -tags=integration $(TEST_PATH)
+
+test: ## Run all unit tests.
+	@echo "Running unit tests..."
+	@go test -v -race ./...
 
 
 generate-openapi: ## Generates server + models to internal/infra/api/apiv1/oapi.gen.go
