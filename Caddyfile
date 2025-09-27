@@ -1,38 +1,40 @@
-# {
-#   auto_https off
-# }
-
-# Admin site (static files) + API proxy
+# Admin Panel (Svelte SPA) + Admin API
 https://admin.sibgpt.app {
-  root * /srv/admin-ui
+  root * /srv/ui
   encode gzip zstd
 
-  # Proxy API calls to backend service (preserve path)
+  # Admin API (session-protected)
   handle /api/* {
     reverse_proxy app:8080
   }
 
-  # Grafana on a sub-path (do NOT strip prefix; Grafana expects /monitor)
+  # Grafana under subpath /monitor (optional, but recommended)
+  @monitorRoot path /monitor
+  handle @monitorRoot {
+    redir /monitor/ 301
+  }
   handle /monitor/* {
     reverse_proxy grafana:3000
   }
 
-  # Serve SPA and fallback to index.html for client-side routing
+  # SPA fallback
   handle {
     try_files {path} /index.html
     file_server
   }
 }
 
+# Payment result SPA + Payment verify API
 https://payment.sibgpt.app {
-  root * /srv/admin-ui
+  root * /srv/ui
   encode gzip zstd
 
+  # Payment verify endpoint (server → ZarinPal)
   handle /api/* {
     reverse_proxy app:8080
   }
 
-  # Serve SPA and fallback to index.html for client-side routing
+  # SPA fallback
   handle {
     try_files {path} /index.html
     file_server

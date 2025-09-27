@@ -1,291 +1,325 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { get, post, put, del, ApiError } from '../lib/api';
+  import { get, post, del } from '../lib/api';
 
-  type Plan = {
+  type PlanServer = {
+    ID: string;
+    Name: string;
+    DurationDays: number;
+    Credits: number;
+    PriceIRR: number;
+    SupportedModels: string[];
+    CreatedAt: string;
+  };
+  type PlansListResponse = { data: PlanServer[] };
+
+  type PlanUI = {
     id: string;
     name: string;
     duration_days: number;
     credits: number;
     price_irr: number;
-    supported_models: string[]; // backend shape
+    supported_models: string[];
+    created_at: string;
   };
 
-  // --- State ---
-  let plans: Plan[] = [];
-  let loading = true;
-  let saving = false;
+  type GenResp = {
+    batch_id: string;
+    codes: { code: string; expires_at?: string|null }[];
+  };
+
+  let plans: PlanUI[] = [];
+  let loading = false;
+  let refreshing = false;
   let error = '';
 
-  // Form state
-  let showForm = false;
-  let editId: string | null = null;
-  const defaultFormState = {
-    name: '',
-    duration_days: 30,
-    credits: 100000,
-    price_irr: 50000,
-    supported_models: 'gpt-4o, gemini-1.5-pro'
-  };
-  let form: {
-    name: string;
-    duration_days: number;
-    credits: number;
-    price_irr: number;
-    supported_models: string;
-  } = { ...defaultFormState };
+  // create form
+  let showCreate = false;
+  let creating = false;
+  let name = '';
+  let duration_days: number = 30;
+  let credits: number = 0;
+  let price_irr: number = 0;
+  let supported_models_str = '';
 
-  // --- Helpers ---
-  function toSupportedModelsArray(s: string) {
-    return s
-      .split(',')
-      .map(x => x.trim())
-      .filter(Boolean);
+  // toast
+  type Toast = { id: number; kind: 'success'|'error'; text: string };
+  let toasts: Toast[] = [];
+  let nextToastId = 1;
+  function toast(text: string, kind: Toast['kind']='success', ttl=3500) {
+    const t = { id: nextToastId++, kind, text };
+    toasts = [...toasts, t];
+    setTimeout(() => toasts = toasts.filter(x => x.id !== t.id), ttl);
   }
+  function closeToast(id: number) { toasts = toasts.filter(x => x.id !== id); }
 
-  function fromSupportedModelsArray(arr: string[]) {
-    return arr.join(', ');
-  }
-
-  // Normalize backend payloads
-  function normalizePlan(raw: any): Plan {
+  function mapServerToUI(p: PlanServer): PlanUI {
     return {
-      id: raw.id ?? raw.ID ?? '',
-      name: raw.name ?? raw.Name ?? '',
-      duration_days: raw.duration_days ?? raw.DurationDays ?? 0,
-      credits: raw.credits ?? raw.Credits ?? 0,
-      price_irr: raw.price_irr ?? raw.PriceIRR ?? 0,
-      supported_models: raw.supported_models ?? raw.supportedModels ?? raw.SupportedModels ?? []
+      id: p.ID,
+      name: p.Name,
+      duration_days: p.DurationDays,
+      credits: p.Credits,
+      price_irr: p.PriceIRR,
+      supported_models: p.SupportedModels || [],
+      created_at: p.CreatedAt
     };
   }
-
-  // --- Notifications (simple inline notifications shown below the table) ---
-  type Notification = { id: string; message: string; type: 'error' | 'info' };
-  let notifications: Notification[] = [];
-
-  function addNotification(message: string, type: 'error' | 'info' = 'error', ttl = 8000) {
-    const id = cryptoRandomId();
-    notifications = [...notifications, { id, message, type }];
-    if (ttl > 0) {
-      setTimeout(() => dismissNotification(id), ttl);
-    }
+  function parseModels(s: string): string[] {
+    return s.split(',').map(x => x.trim()).filter(Boolean);
   }
+  const fmtIRR = (n:number)=> new Intl.NumberFormat('fa-IR').format(Number.isFinite(n)?n:0)+' ریال';
 
-  function dismissNotification(id: string) {
-    notifications = notifications.filter(n => n.id !== id);
-  }
-
-  // small helper for ids (uses crypto if available)
-  function cryptoRandomId() {
+  async function loadPlans() {
+    loading = true; error='';
     try {
-      return (crypto as any).randomUUID?.() ?? Math.random().toString(36).slice(2, 10);
-    } catch {
-      return Math.random().toString(36).slice(2, 10);
-    }
-  }
-
-  // --- CRUD operations ---
-  async function load() {
-    loading = true;
-    error = '';
-    try {
-      const raw = await get<any>('/api/v1/plans');
-      const payload = raw?.data ?? raw;
-      const list = Array.isArray(payload) ? payload : payload?.data ?? payload?.plans ?? payload?.plans_list ?? [];
-      plans = (Array.isArray(list) ? list : []).map(normalizePlan);
-    } catch (e: any) {
-      console.error(e);
-      error = e?.message ?? 'Failed to load plans';
-      plans = [];
+      const res = await get<PlansListResponse>('/api/v1/plans');
+      plans = Array.isArray(res?.data) ? res.data.map(mapServerToUI) : [];
+    } catch (e:any) {
+      error = e?.message || 'Failed to load plans';
+      plans = []; toast(error, 'error');
     } finally {
       loading = false;
     }
   }
+  async function refresh() { refreshing=true; try{await loadPlans();}finally{refreshing=false;} }
 
-  function startCreate() {
-    editId = null;
-    form = { ...defaultFormState };
-    showForm = true;
-  }
-
-  function startEdit(plan: Plan) {
-    editId = plan.id;
-    form = {
-      name: plan.name,
-      duration_days: plan.duration_days,
-      credits: plan.credits,
-      price_irr: plan.price_irr,
-      supported_models: fromSupportedModelsArray(plan.supported_models)
-    };
-    showForm = true;
-  }
-
-  async function submit() {
-    saving = true;
-    error = '';
+  async function createPlan() {
+    creating = true; error='';
     try {
-      const payload = {
-        name: form.name,
-        duration_days: Number(form.duration_days),
-        credits: Number(form.credits),
-        price_irr: Number(form.price_irr),
-        supported_models: toSupportedModelsArray(form.supported_models)
-      };
-
-      if (editId) {
-        // update
-        const raw = await put<any>(`/api/v1/plans/${editId}`, payload);
-        const updated = normalizePlan(raw?.data ?? raw);
-        plans = plans.map(p => (p.id === editId ? updated : p));
-      } else {
-        // create
-        const raw = await post<any>('/api/v1/plans', payload);
-        const created = normalizePlan(raw?.data ?? raw);
-        plans = [created, ...plans];
-      }
-
-      showForm = false;
-      editId = null;
-    } catch (e: any) {
-      console.error(e);
-      if ((e as ApiError)?.status) {
-        error = `Server error: ${ (e as ApiError).status } ${e?.message ?? ''}`;
-      } else {
-        error = e?.message ?? 'Failed to save plan';
-      }
+      await post('/api/v1/plans', {
+        name, duration_days, credits, price_irr,
+        supported_models: parseModels(supported_models_str),
+      });
+      toast('Plan created','success');
+      name=''; duration_days=30; credits=0; price_irr=0; supported_models_str='';
+      showCreate = false;
+      await loadPlans();
+    } catch (e:any) {
+      toast(e?.message || 'Failed to create plan','error');
     } finally {
-      saving = false;
+      creating = false;
     }
   }
+  async function deletePlan(id: string) {
+    if (!confirm('Delete this plan?')) return;
+    try { await del(`/api/v1/plans/${encodeURIComponent(id)}`); toast('Plan deleted'); await loadPlans(); }
+    catch(e:any){ toast(e?.message || 'Failed to delete plan','error'); }
+  }
 
-  async function remove(id: string) {
-    if (!confirm('Are you sure you want to delete this plan?')) return;
+  // ---------- Activation Codes ----------
+  let genOpenFor: string|undefined;
+  let gen_count = 1;
+  let gen_expires = ''; // ISO date (optional)
+  let gen_loading = false;
+  let gen_result: GenResp|null = null;
+
+  function openGen(planId: string) {
+    genOpenFor = planId;
+    gen_count = 1;
+    gen_expires = '';
+    gen_result = null;
+  }
+  function closeGen() { genOpenFor = undefined; gen_result = null; }
+
+  async function generateCodes(planId: string) {
+    gen_loading = true; gen_result = null;
     try {
-      // attempt delete
-      await del(`/api/v1/plans/${id}`);
-      // on success remove from local array
-      plans = plans.filter(p => p.id !== id);
-      addNotification('Plan deleted successfully', 'info', 4000);
-    } catch (e: any) {
-      console.error(e);
-      // Prefer server message if provided, otherwise fall back to a generic message
-      const msg =
-        (e && (e.message ?? (e.error ?? (e?.data?.message ?? undefined)))) ||
-        'Plan could not be deleted. It may have active subscribers or server rejected the request.';
-      addNotification(msg, 'error', 10000);
+      const payload: any = { plan_id: planId, count: Number(gen_count)||1 };
+      if (gen_expires.trim()) payload.expires_at = new Date(gen_expires).toISOString();
+      const resp = await post<GenResp>('/api/v1/activation-codes/generate', payload);
+      gen_result = resp;
+      toast(`Generated ${resp?.codes?.length || 0} codes`, 'success');
+    } catch (e:any) {
+      toast(e?.message || 'Failed to generate codes','error');
+    } finally {
+      gen_loading = false;
     }
   }
 
-  onMount(load);
+  function copyCodes() {
+    if (!gen_result?.codes?.length) return;
+    const txt = gen_result.codes.map(c => c.code).join('\n');
+    navigator.clipboard.writeText(txt).then(()=>toast('Codes copied'),'error');
+  }
+  function downloadCSV() {
+    if (!gen_result?.codes?.length) return;
+    const rows = [['code','expires_at'], ...gen_result.codes.map(c => [c.code, c.expires_at ?? ''])];
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `activation-codes-${gen_result.batch_id}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  onMount(loadPlans);
 </script>
 
-<div>
-  <div class="flex justify-between items-center mb-6">
-    <h2 class="text-2xl font-semibold text-gray-800">Subscription Plans</h2>
-    <button class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-4 py-2 rounded-md" on:click={startCreate}>
-      New Plan
-    </button>
+<!-- toasts -->
+<div class="fixed top-4 right-4 z-50 space-y-2">
+  {#each toasts as t (t.id)}
+    <div class="rounded-md shadow px-4 py-3 text-sm text-white flex items-start gap-3"
+      style="background:{t.kind==='success' ? '#16a34a' : '#dc2626'}">
+      <div class="font-semibold">{t.kind==='success'?'Success':'Error'}</div>
+      <div class="opacity-95">{t.text}</div>
+      <button class="ml-auto opacity-70 hover:opacity-100" on:click={() => closeToast(t.id)}>✕</button>
+    </div>
+  {/each}
+</div>
+
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold text-gray-800">Plans</h2>
+    <div class="flex items-center gap-2">
+      <button class="text-sm text-blue-600 hover:text-blue-800" on:click={refresh} disabled={refreshing||loading}>
+        {refreshing?'Refreshing…':'Refresh'}
+      </button>
+      <button class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded"
+        on:click={() => showCreate = !showCreate}>{showCreate? 'Cancel':'New Plan'}</button>
+    </div>
   </div>
 
-  {#if saving}
-    <div class="text-center p-4 bg-yellow-50 rounded-md mb-4">Saving...</div>
-  {/if}
-
-  {#if showForm}
-    <div class="bg-white p-6 rounded-lg shadow mb-6 border border-gray-200">
-      <h3 class="text-lg font-semibold mb-4">{editId ? 'Edit Plan' : 'Create New Plan'}</h3>
-      {#if error}
-        <div class="mb-3 text-sm text-red-700">{error}</div>
-      {/if}
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+  {#if showCreate}
+    <div class="bg-white rounded-lg shadow p-4">
+      <h3 class="text-lg font-semibold text-gray-700 mb-3">Create New Plan</h3>
+      <form class="grid md:grid-cols-3 gap-4" on:submit|preventDefault={createPlan}>
         <div>
-          <label for="plan-name" class="block text-sm font-medium text-gray-700 mb-1">Plan Name</label>
-          <input id="plan-name" placeholder="e.g., Pro Plan" class="border p-2 w-full rounded-md" bind:value={form.name} />
+          <label for="plan-name" class="text-sm text-gray-600">Name</label>
+          <input id="plan-name" class="w-full border rounded px-3 py-2" bind:value={name} />
         </div>
         <div>
-          <label for="plan-duration" class="block text-sm font-medium text-gray-700 mb-1">Duration (days)</label>
-          <input id="plan-duration" type="number" class="border p-2 w-full rounded-md" bind:value={form.duration_days} />
+          <label for="plan-duration" class="text-sm text-gray-600">Duration (days)</label>
+          <input id="plan-duration" type="number" class="w-full border rounded px-3 py-2" bind:value={duration_days} />
         </div>
         <div>
-          <label for="plan-credits" class="block text-sm font-medium text-gray-700 mb-1">Credits</label>
-          <input id="plan-credits" type="number" class="border p-2 w-full rounded-md" bind:value={form.credits} />
+          <label for="plan-credits" class="text-sm text-gray-600">Credits</label>
+          <input id="plan-credits" type="number" class="w-full border rounded px-3 py-2" bind:value={credits} />
         </div>
         <div>
-          <label for="plan-price" class="block text-sm font-medium text-gray-700 mb-1">Price (IRR)</label>
-          <input id="plan-price" type="number" class="border p-2 w-full rounded-md" bind:value={form.price_irr} />
+          <label for="plan-price" class="text-sm text-gray-600">Price (IRR)</label>
+          <input id="plan-price" type="number" class="w-full border rounded px-3 py-2" bind:value={price_irr} />
         </div>
         <div class="md:col-span-2">
-          <label for="plan-models" class="block text-sm font-medium text-gray-700 mb-1">Supported Models</label>
-          <input id="plan-models" placeholder="e.g., gpt-4o, gemini-1.5-pro" class="border p-2 w-full rounded-md" bind:value={form.supported_models} />
+          <label for="plan-models" class="text-sm text-gray-600">Supported Models (comma separated)</label>
+          <input id="plan-models" class="w-full border rounded px-3 py-2"
+            bind:value={supported_models_str} placeholder="gpt-4o, gpt-4o-mini" />
         </div>
-      </div>
-      <div class="mt-4">
-        <button class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md mr-2" on:click={submit} disabled={saving}>
-          Save
-        </button>
-        <button class="px-4 py-2 border rounded-md" on:click={() => { showForm = false; error = ''; }}>
-          Cancel
-        </button>
-      </div>
+        <div class="md:col-span-3">
+          <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white text-sm px-4 py-2 rounded disabled:opacity-60"
+            disabled={creating}>{creating? 'Creating…':'Create Plan'}</button>
+        </div>
+      </form>
     </div>
   {/if}
 
-  {#if loading}
-    <div class="text-center p-6 bg-white rounded-lg shadow"><p class="text-gray-600">Loading plans...</p></div>
-  {:else if error}
-    <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md shadow"><p>{error}</p></div>
-  {:else}
-    <div class="bg-white rounded-lg shadow overflow-x-auto">
-      <table class="min-w-full bg-white">
-        <thead class="bg-gray-50">
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead class="bg-gray-50 text-gray-600">
           <tr>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Duration</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Credits</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Price (IRR)</th>
-            <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Models</th>
-            <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
+            <th class="text-left px-3 py-2">Name</th>
+            <th class="text-left px-3 py-2">Duration</th>
+            <th class="text-right px-3 py-2">Credits</th>
+            <th class="text-right px-3 py-2">Price</th>
+            <th class="text-left px-3 py-2">Models</th>
+            <th class="text-right px-3 py-2">Actions</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-200">
-          {#each plans as p (p.id)}
-            <tr class="hover:bg-gray-50">
-              <td class="px-6 py-4 whitespace-nowrap font-medium">{p.name}</td>
-              <td class="px-6 py-4 whitespace-nowrap">{p.duration_days} days</td>
-              <td class="px-6 py-4 whitespace-nowrap">{p.credits.toLocaleString()}</td>
-              <td class="px-6 py-4 whitespace-nowrap">{p.price_irr.toLocaleString?.() ?? p.price_irr}</td>
-              <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{(p.supported_models || []).join(', ')}</td>
-              <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
-                <button class="text-blue-600 hover:text-blue-900" on:click={() => startEdit(p)}>Edit</button>
-                <button class="text-red-600 hover:text-red-900" on:click={() => remove(p.id)}>Delete</button>
-              </td>
-            </tr>
-          {/each}
+        <tbody>
+          {#if loading}
+            <tr><td class="px-3 py-3 text-gray-500" colspan="6">Loading…</td></tr>
+          {:else if plans.length === 0}
+            <tr><td class="px-3 py-3 text-gray-500" colspan="6">No plans found</td></tr>
+          {:else}
+            {#each plans as p}
+              <tr class="border-t align-top">
+                <td class="px-3 py-2 font-medium text-gray-800">{p.name}</td>
+                <td class="px-3 py-2 text-gray-700">{p.duration_days} days</td>
+                <td class="px-3 py-2 text-right text-gray-700">{p.credits.toLocaleString()}</td>
+                <td class="px-3 py-2 text-right text-gray-700">{fmtIRR(p.price_irr)}</td>
+                <td class="px-3 py-2 text-gray-700">
+                  {#if p.supported_models?.length}
+                    <span class="inline-flex flex-wrap gap-1">
+                      {#each p.supported_models as m}
+                        <span class="px-2 py-0.5 bg-gray-100 rounded text-gray-700">{m}</span>
+                      {/each}
+                    </span>
+                  {:else}
+                    <span class="text-gray-400">—</span>
+                  {/if}
+                </td>
+                <td class="px-3 py-2 text-right space-x-3">
+                  <button class="text-green-700 hover:text-green-900" on:click={() => openGen(p.id)}>Generate Codes</button>
+                  <button class="text-red-600 hover:text-red-800" on:click={() => deletePlan(p.id)}>Delete</button>
+                </td>
+              </tr>
+
+              {#if genOpenFor === p.id}
+                <tr class="border-b">
+                  <td class="px-3 pb-3" colspan="6">
+                    <div class="rounded-md border p-3 bg-gray-50">
+                      <div class="text-sm font-semibold mb-2">Generate Activation Codes for <span class="text-blue-700">{p.name}</span></div>
+                      <div class="grid md:grid-cols-3 gap-3 items-end">
+                        <div>
+                          <label for="gen-count" class="text-sm text-gray-600">Count</label>
+                          <input id="gen-count" type="number" min="1" class="w-full border rounded px-3 py-2"
+                            bind:value={gen_count} />
+                        </div>
+                        <div>
+                          <label for="gen-exp" class="text-sm text-gray-600">
+                            Expires at (optional, local date/time)
+                          </label>
+                          <input id="gen-exp" type="datetime-local" class="w-full border rounded px-3 py-2"
+                            bind:value={gen_expires} />
+                        </div>
+                        <div class="flex gap-2">
+                          <button class="bg-green-600 hover:bg-green-700 text-white text-sm px-4 py-2 rounded disabled:opacity-60"
+                            on:click={() => generateCodes(p.id)} disabled={gen_loading}>
+                            {gen_loading ? 'Generating…' : 'Generate'}
+                          </button>
+                          <button class="text-gray-600 hover:text-gray-800 text-sm" on:click={closeGen}>Close</button>
+                        </div>
+                      </div>
+
+                      {#if gen_result}
+                        <div class="mt-3">
+                          <div class="flex items-center justify-between">
+                            <div class="text-sm text-gray-700">Batch: <code>{gen_result.batch_id}</code></div>
+                            <div class="space-x-2">
+                              <button class="text-sm text-blue-600 hover:text-blue-800" on:click={copyCodes}>Copy</button>
+                              <button class="text-sm text-blue-600 hover:text-blue-800" on:click={downloadCSV}>Download CSV</button>
+                            </div>
+                          </div>
+                          <div class="overflow-x-auto mt-2">
+                            <table class="min-w-full text-xs">
+                              <thead class="bg-gray-100">
+                                <tr><th class="text-left px-2 py-1">Code</th><th class="text-left px-2 py-1">Expires</th></tr>
+                              </thead>
+                              <tbody>
+                                {#each gen_result.codes as c}
+                                  <tr class="border-t">
+                                    <td class="px-2 py-1 font-mono">{c.code}</td>
+                                    <td class="px-2 py-1">{c.expires_at ? new Date(c.expires_at).toLocaleString() : '—'}</td>
+                                  </tr>
+                                {/each}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  </td>
+                </tr>
+              {/if}
+            {/each}
+          {/if}
         </tbody>
       </table>
     </div>
-    <!-- Notifications area (appears under the table) -->
-    {#if notifications.length > 0}
-      <div class="mt-4 space-y-2">
-        {#each notifications as n (n.id)}
-          <div class="flex items-start justify-between p-3 rounded-md shadow-sm"
-              class:bg-red-50={n.type === 'error'}
-              class:border-red-200={n.type === 'error'}
-              class:bg-green-50={n.type === 'info'}
-              class:border-green-200={n.type === 'info'}
-              style="border:1px solid rgba(0,0,0,0.05);">
-            <div class="text-sm text-gray-800">
-              <strong class="mr-2">{n.type === 'error' ? 'Error' : 'Info'}:</strong>
-              <span>{n.message}</span>
-            </div>
-            <div>
-              <button class="text-xs px-2 py-1 rounded hover:bg-gray-100" on:click={() => dismissNotification(n.id)}>
-                Dismiss
-              </button>
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  {/if}
+  </div>
 </div>
+
+<style>
+  button[disabled]{opacity:.6;cursor:not-allowed;}
+</style>

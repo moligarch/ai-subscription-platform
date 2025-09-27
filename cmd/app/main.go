@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +20,7 @@ import (
 	payAdapters "telegram-ai-subscription/internal/infra/adapters/payment"
 	tele "telegram-ai-subscription/internal/infra/adapters/telegram"
 	"telegram-ai-subscription/internal/infra/api"
+	"telegram-ai-subscription/internal/infra/api/apiv1"
 	pg "telegram-ai-subscription/internal/infra/db/postgres"
 	"telegram-ai-subscription/internal/infra/i18n"
 	"telegram-ai-subscription/internal/infra/logging"
@@ -29,6 +32,7 @@ import (
 	"telegram-ai-subscription/internal/infra/worker"
 	"telegram-ai-subscription/internal/usecase"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
 )
@@ -214,13 +218,42 @@ func main() {
 	// Payment/API server (now SPA-first: only /api/v1/payment/verify here + metrics)
 	paymentAPIServer := api.NewServer(paymentUC, userRepo, botAdapter, cfg.Bot.Username, translator, logger)
 
-	// Admin Panel API server (your existing JSON admin endpoints)
-	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, logger)
+	// Admin session / JWT
+	secretSrc := cfg.Admin.APIKey
+	if strings.TrimSpace(secretSrc) == "" {
+		secretSrc = cfg.Security.EncryptionKey
+		if strings.TrimSpace(secretSrc) == "" {
+			secretSrc = "dev-admin-jwt-secret-please-change-32!"
+		}
+	}
+	sum := sha256.Sum256([]byte("jwt:" + secretSrc))
+	jwtSecret := hex.EncodeToString(sum[:])
+	// Secure cookie (true) assumes TLS termination at Caddy. Empty domain = host-only cookie.
+	authMgr := web.NewAuthManager(jwtSecret, true /* secure cookie */, "" /* cookie domain */, 30*time.Minute)
+
+	// Admin Panel API server (session-protected admin endpoints)
+	adminAPIServer := web.NewServer(statsUC, userUC, subUC, planUC, cfg.Admin.APIKey, authMgr, logger)
 
 	mux := http.NewServeMux()
 	paymentAPIServer.Register(mux)
 	adminAPIServer.RegisterRoutes(mux)
 
+	// ---- Mount OpenAPI Admin API (models + activation-codes) behind the same session auth ----
+
+	// 1) Pricing use case (if not already created earlier)
+	pricingUC := usecase.NewPricingUseCase(priceRepo, txManager, logger)
+
+	// 2) Generated API server implementation
+	apiV1Server := apiv1.NewServer(pricingUC, planUC)
+
+	// 3) chi router for generated endpoints
+	adminChi := chi.NewRouter()
+	apiv1.RegisterAPIV1(adminChi, apiV1Server)
+
+	// 4) Mount the generated router behind the same cookie-session middleware
+	// NOTE: This does not shadow your explicit handlers (/api/v1/stats, /api/v1/users, /api/v1/plans):
+	// net/http ServeMux picks the *longest* match, so exact paths win over the prefix "/api/v1/" here.
+	mux.Handle("/api/v1/", adminAPIServer.AuthWrap(adminChi))
 	handler := api.Chain(mux,
 		api.TraceID(logger),
 		api.RequestLog(logger),

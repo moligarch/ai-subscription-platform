@@ -12,7 +12,7 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./deploy/admin-ui:/srv/admin-ui
+      - ./deploy/ui:/srv/ui
       - caddy_data:/data
     networks:
       - app_net
@@ -69,7 +69,7 @@ services:
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
-      - GF_SERVER_ROOT_URL=https://admin.sibgpt.app/monitor
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/monitor/
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
       # optional if behind a proxy terminating TLS:
       # - GF_SERVER_DOMAIN=admin.sibgpt.app

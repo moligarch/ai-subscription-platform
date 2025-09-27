@@ -7,4 +7,4 @@ bin/
 
 ui/node_modules/
 ui/dist/
-deploy/admin-ui/
+deploy/ui/

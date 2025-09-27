@@ -6,7 +6,7 @@ DC ?= docker compose
 DC_DEBUG_FILES = -f docker-compose.yml -f docker-compose.debug.yml
 
 UI_DIR := ui
-DEPLOY_UI_DIR := deploy/admin-ui
+DEPLOY_UI_DIR := deploy/ui
 MAIN_PKG ?= ./cmd/app
 
 OPENAPI_SPEC := deploy/openapi/openapi.yaml
@@ -41,9 +41,19 @@ infra-down: ## Stop & Remove infrastructure containers
 infra-stop: ## Stop infrastructure containers (does not remove volumes/images)
 	$(DC) stop postgres redis prometheus grafana $(CADDY_SERVICE)
 
+
+# --- Build metadata ---
+# Short git commit (fallback "nogit" outside a repo)
+GIT_COMMIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo nogit)
+# Version from tags (fallback "dev")
+VERSION    := $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+
 # --- Production build / run ---
 build-prod: ## Build the production app image (uses Dockerfile in repo)
-	$(DC) build $(APP_SERVICE)
+	$(DC) build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(GIT_COMMIT) \
+		$(APP_SERVICE)
 
 run-prod: build-prod ## Build and run the app service in production mode
 	$(DC) up -d $(APP_SERVICE)
