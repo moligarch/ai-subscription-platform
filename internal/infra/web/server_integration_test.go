@@ -3,6 +3,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -36,6 +37,34 @@ func cleanup(t *testing.T) {
 	}
 }
 
+// helper: perform login and return the admin session cookie
+func loginAndGetCookie(t *testing.T, baseURL, apiKey string) *http.Cookie {
+	t.Helper()
+	body := bytes.NewBufferString(`{"key":"` + apiKey + `"}`)
+	req, _ := http.NewRequest(http.MethodPost, baseURL+"/api/v1/admin/auth/login", body)
+	req.Header.Set("content-type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("login request failed: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 on login, got %d", res.StatusCode)
+	}
+	var sessionCookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == "admin_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatal("expected admin_session cookie from login")
+	}
+	return sessionCookie
+}
+
 func TestStatsAPI_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode.")
@@ -47,7 +76,7 @@ func TestStatsAPI_Integration(t *testing.T) {
 	logger := zerolog.New(nil)
 	const apiKey = "integration-test-key"
 
-	// Repositories now use the pool from this package's TestMain
+	// Repositories use the shared testPool (set up in TestMain).
 	userRepo := postgres.NewUserRepo(testPool)
 	planRepo := postgres.NewPlanRepo(testPool)
 	subRepo := postgres.NewSubscriptionRepo(testPool)
@@ -55,10 +84,10 @@ func TestStatsAPI_Integration(t *testing.T) {
 
 	// Seed Data
 	user, _ := model.NewUser("", 123, "testuser")
-	userRepo.Save(ctx, nil, user)
+	_ = userRepo.Save(ctx, nil, user)
 
 	plan, _ := model.NewSubscriptionPlan("", "Pro", 30, 1000, 50000)
-	planRepo.Save(ctx, nil, plan)
+	_ = planRepo.Save(ctx, nil, plan)
 
 	now := time.Now()
 	payment := &model.Payment{
@@ -70,13 +99,16 @@ func TestStatsAPI_Integration(t *testing.T) {
 		Currency: "IRR",
 		PaidAt:   &now,
 	}
-	paymentRepo.Save(ctx, nil, payment)
+	_ = paymentRepo.Save(ctx, nil, payment)
 
 	// Usecase and Server
 	statsUC := usecase.NewStatsUseCase(userRepo, subRepo, paymentRepo, &logger)
 	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
-	server := NewServer(statsUC, userUC, subUC, nil, apiKey, &logger)
+
+	// Auth manager for session-based auth (no TLS in tests → secure=false).
+	auth := NewAuthManager("integration-admin-jwt-secret", false, "", 15*time.Minute)
+	server := NewServer(statsUC, userUC, subUC, nil, apiKey, auth, &logger)
 
 	// HTTP Test Server
 	mux := http.NewServeMux()
@@ -84,25 +116,25 @@ func TestStatsAPI_Integration(t *testing.T) {
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
-	t.Run("Success with valid token", func(t *testing.T) {
-		// Arrange
-		req, _ := http.NewRequest("GET", testServer.URL+"/api/v1/stats", nil)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	// Login to obtain session cookie
+	sessionCookie := loginAndGetCookie(t, testServer.URL, apiKey)
 
-		// Act
+	t.Run("Success with valid session", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/stats", nil)
+		req.AddCookie(sessionCookie)
+
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
 		defer res.Body.Close()
 
-		// Assert
 		if res.StatusCode != http.StatusOK {
 			t.Errorf("Expected status 200 OK, got %d", res.StatusCode)
 		}
 
 		var body map[string]interface{}
-		json.NewDecoder(res.Body).Decode(&body)
+		_ = json.NewDecoder(res.Body).Decode(&body)
 
 		if body["total_users"].(float64) != 1 {
 			t.Errorf("Expected 1 total user, got %v", body["total_users"])
@@ -112,21 +144,18 @@ func TestStatsAPI_Integration(t *testing.T) {
 		}
 	})
 
-	t.Run("Failure with invalid token", func(t *testing.T) {
-		// Arrange
-		req, _ := http.NewRequest("GET", testServer.URL+"/api/v1/stats", nil)
-		req.Header.Set("Authorization", "Bearer invalid-key")
+	t.Run("Failure with invalid bearer jwt -> 401", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, testServer.URL+"/api/v1/stats", nil)
+		req.Header.Set("Authorization", "Bearer invalid.jwt.token")
 
-		// Act
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
 		defer res.Body.Close()
 
-		// Assert
-		if res.StatusCode != http.StatusForbidden {
-			t.Errorf("Expected status 403 Forbidden, got %d", res.StatusCode)
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("Expected status 401 Unauthorized, got %d", res.StatusCode)
 		}
 	})
 }
@@ -159,7 +188,9 @@ func TestUsersListAPI_Integration(t *testing.T) {
 	// Usecase and Server
 	userUC := usecase.NewUserUseCase(userRepo, nil, nil, nil, nil, nil, &logger)
 	subUC := usecase.NewSubscriptionUseCase(subRepo, planRepo, nil, nil, &logger)
-	server := NewServer(nil, userUC, subUC, nil, apiKey, &logger) // statsUC is not needed here
+
+	auth := NewAuthManager("integration-admin-jwt-secret", false, "", 15*time.Minute)
+	server := NewServer(nil, userUC, subUC, nil, apiKey, auth, &logger) // statsUC, planUC not needed here
 
 	// HTTP Test Server
 	mux := http.NewServeMux()
@@ -167,9 +198,12 @@ func TestUsersListAPI_Integration(t *testing.T) {
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
-	// Act: Make the request
+	// Login to obtain session cookie
+	sessionCookie := loginAndGetCookie(t, testServer.URL, apiKey)
+
+	// Act: Make the request with cookie
 	req, _ := http.NewRequest("GET", testServer.URL+"/api/v1/users?limit=2&offset=1", nil)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.AddCookie(sessionCookie)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("Request failed: %v", err)
@@ -214,15 +248,19 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 	// Arrange: Setup repositories, use cases, and the test server
 	planRepo := postgres.NewPlanRepo(testPool)
 	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
-	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+
+	auth := NewAuthManager("integration-admin-jwt-secret", false, "", 15*time.Minute)
+	server := NewServer(nil, nil, nil, planUC, apiKey, auth, &logger)
 
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
+	// Login to obtain session cookie
+	sessionCookie := loginAndGetCookie(t, testServer.URL, apiKey)
+
 	t.Run("Success", func(t *testing.T) {
-		// Define the plan to be created
 		planPayload := `
 		{
 			"name": "API-Integration-Plan",
@@ -233,9 +271,8 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 		}`
 		bodyReader := strings.NewReader(planPayload)
 
-		// Act: Make the POST request
 		req, _ := http.NewRequest("POST", testServer.URL+"/api/v1/plans", bodyReader)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.AddCookie(sessionCookie)
 		req.Header.Set("Content-Type", "application/json")
 
 		res, err := http.DefaultClient.Do(req)
@@ -244,7 +281,6 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 		}
 		defer res.Body.Close()
 
-		// Assert: Check the HTTP response
 		if res.StatusCode != http.StatusCreated {
 			t.Fatalf("Expected status 201 Created, got %d", res.StatusCode)
 		}
@@ -261,7 +297,7 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 			t.Error("Expected a plan ID in the response, but it was empty")
 		}
 
-		// Assert: Verify the plan was actually saved to the database
+		// Verify saved in DB
 		savedPlan, err := planRepo.FindByID(ctx, nil, createdPlan.ID)
 		if err != nil {
 			t.Fatalf("Failed to find the created plan in the database: %v", err)
@@ -272,13 +308,11 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 	})
 
 	t.Run("Failure for bad request", func(t *testing.T) {
-		// Arrange: Malformed JSON (credits is a string instead of a number)
 		planPayload := `{"name": "Bad-Plan", "credits": "fifty-thousand"}`
 		bodyReader := strings.NewReader(planPayload)
 
-		// Act: Make the POST request
 		req, _ := http.NewRequest("POST", testServer.URL+"/api/v1/plans", bodyReader)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.AddCookie(sessionCookie)
 		req.Header.Set("Content-Type", "application/json")
 
 		res, err := http.DefaultClient.Do(req)
@@ -287,7 +321,6 @@ func TestPlansCreateAPI_Integration(t *testing.T) {
 		}
 		defer res.Body.Close()
 
-		// Assert: Check the HTTP response status code
 		if res.StatusCode != http.StatusBadRequest {
 			t.Errorf("Expected status 400 Bad Request, got %d", res.StatusCode)
 		}
@@ -311,19 +344,23 @@ func TestPlansUpdateAPI_Integration(t *testing.T) {
 	}
 
 	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
-	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+
+	auth := NewAuthManager("integration-admin-jwt-secret", false, "", 15*time.Minute)
+	server := NewServer(nil, nil, nil, planUC, apiKey, auth, &logger)
+
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
-	// Define the update payload
+	// Login to obtain session cookie
+	sessionCookie := loginAndGetCookie(t, testServer.URL, apiKey)
+
 	updatePayload := `{"name": "Updated Plan Name", "duration_days": 45, "credits": 200, "price_irr": 2000, "supported_models": ["gpt-4o"]}`
 	bodyReader := strings.NewReader(updatePayload)
 
-	// Act: Make the PUT request
 	req, _ := http.NewRequest("PUT", testServer.URL+"/api/v1/plans/"+initialPlan.ID, bodyReader)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.AddCookie(sessionCookie)
 	req.Header.Set("Content-Type", "application/json")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -331,12 +368,11 @@ func TestPlansUpdateAPI_Integration(t *testing.T) {
 	}
 	defer res.Body.Close()
 
-	// Assert: Check the HTTP response
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("Expected status 200 OK, got %d", res.StatusCode)
 	}
 
-	// Assert: Verify the plan was actually updated in the database
+	// Verify the plan was updated
 	savedPlan, err := planRepo.FindByID(ctx, nil, initialPlan.ID)
 	if err != nil {
 		t.Fatalf("Failed to find the updated plan in the database: %v", err)
@@ -383,25 +419,28 @@ func TestPlansDeleteAPI_Integration(t *testing.T) {
 		t.Fatalf("failed to save subscription: %v", err)
 	}
 
-	// Setup Server
 	planUC := usecase.NewPlanUseCase(planRepo, nil, nil, &logger)
-	server := NewServer(nil, nil, nil, planUC, apiKey, &logger)
+
+	auth := NewAuthManager("integration-admin-jwt-secret", false, "", 15*time.Minute)
+	server := NewServer(nil, nil, nil, planUC, apiKey, auth, &logger)
+
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	testServer := httptest.NewServer(mux)
 	defer testServer.Close()
 
+	// Login to obtain session cookie
+	sessionCookie := loginAndGetCookie(t, testServer.URL, apiKey)
+
 	t.Run("Success", func(t *testing.T) {
-		// Act
 		req, _ := http.NewRequest("DELETE", testServer.URL+"/api/v1/plans/"+planToDelete.ID, nil)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.AddCookie(sessionCookie)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
 		defer res.Body.Close()
 
-		// Assert
 		if res.StatusCode != http.StatusNoContent {
 			t.Fatalf("Expected status 204 No Content, got %d", res.StatusCode)
 		}
@@ -414,16 +453,14 @@ func TestPlansDeleteAPI_Integration(t *testing.T) {
 	})
 
 	t.Run("Failure for plan in use", func(t *testing.T) {
-		// Act
 		req, _ := http.NewRequest("DELETE", testServer.URL+"/api/v1/plans/"+planInUse.ID, nil)
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.AddCookie(sessionCookie)
 		res, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("Request failed: %v", err)
 		}
 		defer res.Body.Close()
 
-		// Assert
 		if res.StatusCode != http.StatusConflict {
 			t.Fatalf("Expected status 409 Conflict, got %d", res.StatusCode)
 		}
